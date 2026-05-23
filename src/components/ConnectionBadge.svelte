@@ -25,7 +25,7 @@
     `${queueStore.pendingCount} pending change${queueStore.pendingCount === 1 ? '' : 's'} waiting to be sent to the broker`,
   );
 
-  const text = $derived.by(() => {
+  const statusText = $derived.by(() => {
     if (app.connection === 'reconnecting') {
       if (app.nextAttemptAt !== null) {
         const secs = Math.max(0, Math.ceil((app.nextAttemptAt - nowTick) / 1000));
@@ -38,11 +38,18 @@
     if (app.connection === 'error') return 'Error';
     return 'Disconnected';
   });
+
+  const reconnectSecs = $derived.by(() => {
+    if (app.connection !== 'reconnecting' || app.nextAttemptAt === null) return null;
+    return Math.max(0, Math.ceil((app.nextAttemptAt - nowTick) / 1000));
+  });
 </script>
 
-<div class="badge" title={app.connectionError ?? text}>
+<div class="badge" title={app.connectionError ?? statusText} aria-label={statusText}>
   <span class="dot" style:background={colors[app.connection]}></span>
-  <span class="text">{text}</span>
+  {#if reconnectSecs !== null}
+    <span class="secs" aria-hidden="true">{reconnectSecs}s</span>
+  {/if}
   <span
     class="pending"
     style:visibility={queueStore.pendingCount >= 2 ? 'visible' : 'hidden'}
@@ -67,6 +74,11 @@
     height: 10px;
     border-radius: 50%;
     display: inline-block;
+  }
+  .secs {
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
   }
   .pending {
     color: var(--fg-3);
