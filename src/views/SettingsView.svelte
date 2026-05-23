@@ -1,6 +1,16 @@
 <script lang="ts">
   import { app } from '../lib/stores/app.svelte.ts';
-  import type { Direction } from '../lib/types.ts';
+  import type { Direction, SrsMode } from '../lib/types.ts';
+
+  const modes: { value: SrsMode; label: string; hint: string }[] = [
+    { value: 'sm2', label: 'SM-2', hint: 'Classic spaced-repetition with due dates.' },
+    { value: 'weighted-random', label: 'Weighted random', hint: 'Always pick; bias toward recent Agains.' },
+    { value: 'serial', label: 'Serial', hint: 'Walk the deck in stable list order.' },
+  ];
+
+  async function setMode(m: SrsMode) {
+    await app.updateSettings({ srsMode: m });
+  }
 
   async function setDirection(d: Direction) {
     await app.updateSettings({ direction: d });
@@ -21,7 +31,16 @@
 
   <div class="card col">
     <div><strong>SRS mode</strong></div>
-    <div class="muted">Only <code>sm2</code> is available in this build. Weighted and Serial modes ship in slice 3.</div>
+    <div class="col" role="radiogroup">
+      {#each modes as m (m.value)}
+        <button
+          class={app.settings.srsMode === m.value ? 'primary' : ''}
+          onclick={() => setMode(m.value)}>
+          <div class="mode-label">{m.label}</div>
+          <div class="mode-hint">{m.hint}</div>
+        </button>
+      {/each}
+    </div>
   </div>
 
   <div class="card col">
@@ -45,3 +64,12 @@
     </div>
   </div>
 </div>
+
+<style>
+  .mode-label { font-weight: 500; }
+  .mode-hint { font-size: 0.85rem; opacity: 0.8; margin-top: 0.15rem; }
+  [role='radiogroup'] button {
+    text-align: left;
+    padding: 0.6rem 0.85rem;
+  }
+</style>

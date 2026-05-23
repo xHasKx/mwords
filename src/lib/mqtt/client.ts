@@ -5,46 +5,75 @@ import type { PublishOpts } from './queue.ts';
 
 export type MessageHandler = (msg: IncomingMessage) => void;
 export type StateHandler = (state: ConnectionState, err?: Error) => void;
+export type NextAttemptHandler = (nextAttemptAt: number | null) => void;
+
+const MIN_BACKOFF = 1_000;
+const MAX_BACKOFF = 30_000;
 
 export class MqttWrapper {
   private client: MqttClient | null = null;
   private onMessage: MessageHandler;
   private onState: StateHandler;
+  private onNextAttempt: NextAttemptHandler | null;
   private currentSubscriptions = new Set<string>();
+  private nextBackoff = MIN_BACKOFF;
 
-  constructor(onMessage: MessageHandler, onState: StateHandler) {
+  constructor(
+    onMessage: MessageHandler,
+    onState: StateHandler,
+    onNextAttempt?: NextAttemptHandler,
+  ) {
     this.onMessage = onMessage;
     this.onState = onState;
+    this.onNextAttempt = onNextAttempt ?? null;
   }
 
   connect(conn: StoredConnection): void {
     if (this.client) return;
     this.onState('connecting');
+    this.nextBackoff = MIN_BACKOFF;
     const client = mqtt.connect(conn.url, {
       username: conn.username || undefined,
       password: conn.password || undefined,
       protocolVersion: 5,
       clean: true,
       resubscribe: false,
-      reconnectPeriod: 1000,
+      reconnectPeriod: MIN_BACKOFF,
       connectTimeout: 10_000,
     });
     this.client = client;
 
     client.on('connect', () => {
       this.onState('connected');
-      // Slice 1/2: re-issue any active subscriptions on reconnect.
+      // Reset both fields — mqtt.js consumes `reconnectPeriod` between
+      // `close` and the next `reconnect` event, so resetting only the
+      // local mirror leaves a stale period in effect for the first
+      // post-reconnect wait.
+      this.nextBackoff = MIN_BACKOFF;
+      client.options.reconnectPeriod = MIN_BACKOFF;
+      this.onNextAttempt?.(null);
+      // Re-issue any active subscriptions (slice 3 still pre-subscribes
+      // here; the LWW gate in AppStore handles retained replay).
       for (const filter of this.currentSubscriptions) {
         client.subscribe(filter, { qos: 1 });
       }
     });
-    client.on('reconnect', () => this.onState('reconnecting'));
+    client.on('reconnect', () => {
+      // mqtt.js is actively dialing now — clear the countdown target,
+      // and bump backoff for the *next* failed wait (mqtt.js consumed
+      // the current `reconnectPeriod` before firing this event).
+      const jittered = this.nextBackoff * 2 * (0.8 + Math.random() * 0.4);
+      this.nextBackoff = Math.min(MAX_BACKOFF, Math.round(jittered));
+      client.options.reconnectPeriod = this.nextBackoff;
+      this.onNextAttempt?.(null);
+      this.onState('reconnecting');
+    });
     client.on('close', () => {
-      if (client.disconnecting || client.disconnected) {
-        // keep current state; explicit disconnect path will reset
-      } else {
-        this.onState('reconnecting');
-      }
+      if (client.disconnecting || client.disconnected) return;
+      // Close after a connect — mqtt.js will wait `reconnectPeriod` ms
+      // before firing `reconnect`. Surface the countdown target.
+      this.onNextAttempt?.(Date.now() + this.nextBackoff);
+      this.onState('reconnecting');
     });
     client.on('error', (err) => this.onState('error', err));
     client.on('message', (topic, payload, packet) => {
@@ -60,6 +89,7 @@ export class MqttWrapper {
     if (!c) return;
     this.client = null;
     this.currentSubscriptions.clear();
+    this.onNextAttempt?.(null);
     c.end(true);
     this.onState('idle');
   }
@@ -80,9 +110,6 @@ export class MqttWrapper {
     });
   }
 
-  // Raw publish used by PublishQueue.flush(). The queue is responsible for
-  // serializing payloads and selecting the timestamp User Property; this
-  // method just hands the byte string to mqtt.js and surfaces the PUBACK.
   publishRaw(
     topic: string,
     data: string,

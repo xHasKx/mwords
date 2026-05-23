@@ -11,10 +11,19 @@ import { queue } from '../mqtt/queue.ts';
 
 type View = 'connect' | 'picker' | 'review' | 'edit' | 'settings';
 
+const SYNC_DEBOUNCE_MS = 500;
+
+function parseUP(raw: string | undefined): number | null {
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 class AppStore {
   connection = $state<ConnectionState>('idle');
   connectionError = $state<string | null>(null);
   publishError = $state<string | null>(null);
+  nextAttemptAt = $state<number | null>(null);
 
   groups = new SvelteMap<string, Group>();
   settings = $state<Settings>(defaultSettings());
@@ -28,6 +37,9 @@ class AppStore {
 
   private mqtt: MqttWrapper | null = null;
   private storedConn: StoredConnection | null = null;
+
+  private syncResolve: (() => void) | null = null;
+  private syncTimer: number | null = null;
 
   init(): void {
     this.storedConn = creds.read();
@@ -57,8 +69,9 @@ class AppStore {
 
     this.mqtt?.disconnect();
     this.mqtt = new MqttWrapper(
-      (msg) => this.handleMessage(msg.topic, msg.payload),
+      (msg) => this.handleMessage(msg.topic, msg.payload, msg.timestampUP),
       (state, err) => this.handleState(state, err),
+      (nextAttemptAt) => (this.nextAttemptAt = nextAttemptAt),
     );
     queue.setPublisher((topic, data, opts, cb) =>
       this.mqtt!.publishRaw(topic, data, opts, cb),
@@ -67,6 +80,7 @@ class AppStore {
   }
 
   disconnect(): void {
+    this.cancelSync();
     queue.setPublisher(null);
     void queue.onClose();
     this.mqtt?.disconnect();
@@ -78,6 +92,7 @@ class AppStore {
     this.settings = defaultSettings();
     this.connection = 'idle';
     this.connectionError = null;
+    this.nextAttemptAt = null;
     this.view = 'connect';
   }
 
@@ -96,6 +111,7 @@ class AppStore {
       void queue.onConnect();
       void this.afterConnect();
     } else if (state === 'reconnecting') {
+      this.cancelSync();
       void queue.onClose();
     }
   }
@@ -103,8 +119,12 @@ class AppStore {
   private async afterConnect(): Promise<void> {
     if (!this.mqtt || !this.storedConn) return;
     const prefix = this.storedConn.prefix;
-    await this.mqtt.subscribeMany([groupsFilter(prefix), settingsTopic(prefix)]);
-    setTimeout(() => this.afterPhase1(), 600);
+    // Drain pending intents before subscribing. Guarantees the broker
+    // holds our latest values by the time retained replay reaches us.
+    await queue.drainAll();
+    if (!this.mqtt) return; // bail if we disconnected mid-drain
+    await this.subscribeAndSync([groupsFilter(prefix), settingsTopic(prefix)]);
+    this.afterPhase1();
   }
 
   private afterPhase1(): void {
@@ -119,14 +139,78 @@ class AppStore {
     }
   }
 
-  private handleMessage(topic: string, payload: Uint8Array): void {
+  // Subscribe and wait for SUBACK + a 500 ms quiet window. Each incoming
+  // message resets the quiet window, so retained replay finishes draining
+  // before we resolve.
+  private async subscribeAndSync(filters: string[]): Promise<void> {
+    if (!this.mqtt) return;
+    await this.mqtt.subscribeMany(filters);
+    await new Promise<void>((resolve) => {
+      this.syncResolve = resolve;
+      this.kickSyncDebounce();
+    });
+  }
+
+  private kickSyncDebounce(): void {
+    if (this.syncResolve === null) return;
+    if (this.syncTimer !== null) clearTimeout(this.syncTimer);
+    this.syncTimer = window.setTimeout(() => {
+      this.syncTimer = null;
+      const r = this.syncResolve;
+      this.syncResolve = null;
+      r?.();
+    }, SYNC_DEBOUNCE_MS);
+  }
+
+  private cancelSync(): void {
+    if (this.syncTimer !== null) {
+      clearTimeout(this.syncTimer);
+      this.syncTimer = null;
+    }
+    if (this.syncResolve) {
+      const r = this.syncResolve;
+      this.syncResolve = null;
+      r();
+    }
+  }
+
+  // LWW gate. Returns true if the incoming message should be applied.
+  // Slice 3: no tombstone watermark — that lands in slice 4.
+  private acceptByGate(
+    localUpdated: number | undefined,
+    incomingUP: number | null,
+  ): boolean {
+    if (incomingUP === null) return true;       // no usable UP
+    if (localUpdated === undefined) return true; // no local record
+    if (localUpdated <= 0) return true;          // sentinel default
+    return incomingUP >= localUpdated;
+  }
+
+  private handleMessage(topic: string, payload: Uint8Array, timestampUP?: string): void {
     if (!this.storedConn) return;
     const parsed = parseTopic(this.storedConn.prefix, topic);
+    const up = parseUP(timestampUP);
 
+    // Every message — gated or dropped — counts against the sync
+    // debounce: when retained replay is flooding in, this keeps the
+    // 500 ms quiet window honest.
+    this.kickSyncDebounce();
+
+    // Tombstone: zero-byte short-circuit (no JSON, no payload checks).
     if (payload.byteLength === 0) {
-      if (parsed.kind === 'word') this.words.delete(parsed.id);
-      else if (parsed.kind === 'srs') this.srs.delete(parsed.id);
-      else if (parsed.kind === 'group') this.groups.delete(parsed.gid);
+      if (parsed.kind === 'word') {
+        const local = this.words.get(parsed.id);
+        if (!this.acceptByGate(local?.updated, up)) return;
+        this.words.delete(parsed.id);
+      } else if (parsed.kind === 'srs') {
+        const local = this.srs.get(parsed.id);
+        if (!this.acceptByGate(local?.updated, up)) return;
+        this.srs.delete(parsed.id);
+      } else if (parsed.kind === 'group') {
+        const local = this.groups.get(parsed.gid);
+        if (!this.acceptByGate(local?.updated, up)) return;
+        this.groups.delete(parsed.gid);
+      }
       return;
     }
 
@@ -141,26 +225,29 @@ class AppStore {
 
     if (parsed.kind === 'group') {
       const g = data as Group;
-      if (g.id === parsed.gid && typeof g.name === 'string') {
-        this.groups.set(g.id, g);
-      }
+      if (g.id !== parsed.gid || typeof g.name !== 'string') return;
+      const local = this.groups.get(g.id);
+      if (!this.acceptByGate(local?.updated, up)) return;
+      this.groups.set(g.id, g);
     } else if (parsed.kind === 'settings') {
       const s = data as Settings;
-      if (s && typeof s.srsMode === 'string') {
-        this.settings = s;
-      }
+      if (!s || typeof s.srsMode !== 'string') return;
+      if (!this.acceptByGate(this.settings.updated, up)) return;
+      this.settings = s;
     } else if (parsed.kind === 'word') {
       if (this.activeGroupId !== parsed.gid) return;
       const w = data as Word;
-      if (w.id === parsed.id && typeof w.text === 'string') {
-        this.words.set(w.id, w);
-      }
+      if (w.id !== parsed.id || typeof w.text !== 'string') return;
+      const local = this.words.get(w.id);
+      if (!this.acceptByGate(local?.updated, up)) return;
+      this.words.set(w.id, w);
     } else if (parsed.kind === 'srs') {
       if (this.activeGroupId !== parsed.gid) return;
       const s = data as SrsState;
-      if (s.id === parsed.id && typeof s.ease === 'number') {
-        this.srs.set(s.id, s);
-      }
+      if (s.id !== parsed.id || typeof s.ease !== 'number') return;
+      const local = this.srs.get(s.id);
+      if (!this.acceptByGate(local?.updated, up)) return;
+      this.srs.set(s.id, s);
     }
   }
 
@@ -198,8 +285,7 @@ class AppStore {
       this.srs.clear();
       this.activeGroupId = gid;
       creds.update({ lastGroup: gid });
-      await this.mqtt.subscribeMany([wordsFilter(prefix, gid), srsFilter(prefix, gid)]);
-      await new Promise((r) => setTimeout(r, 400));
+      await this.subscribeAndSync([wordsFilter(prefix, gid), srsFilter(prefix, gid)]);
       this.view = 'review';
     } finally {
       this.switching = false;
