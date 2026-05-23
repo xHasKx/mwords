@@ -12,7 +12,15 @@
   const showNav = $derived(
     app.view === 'review' || app.view === 'edit' || app.view === 'settings',
   );
+  const showGroupHeader = $derived(app.view === 'review' || app.view === 'edit');
+  const groupName = $derived(
+    app.activeGroupId ? app.groups.get(app.activeGroupId)?.name ?? '' : '',
+  );
 </script>
+
+{#if showGroupHeader && groupName}
+  <h1 class="group-header">{groupName}</h1>
+{/if}
 
 {#if app.view === 'connect'}
   <ConnectionForm />
@@ -38,6 +46,15 @@
 {/if}
 
 <style>
+  .group-header {
+    margin: 0 0 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--fg-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .switching {
     position: fixed;
     inset: 0;
