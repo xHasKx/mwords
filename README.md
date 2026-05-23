@@ -1,4 +1,6 @@
-# mwords — MQTT Anki Words
+# mwords — Anki-like flashcard web app backed by MQTT
+
+**Disclaimer**: most of the code written by Claude Code.
 
 A simple browser-based, Anki-like flashcard app for language learning, with
 spaced-repetition review and an editable word list. Words are organised
