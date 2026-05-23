@@ -268,8 +268,13 @@ mwords/
 ## Application lifecycle
 
 1. **Boot.** `main.ts` mounts `<App />`.
-2. **Read credentials** from `localStorage` (`mwords:connection`). If missing
-   or invalid → render `ConnectionForm`.
+2. **Read credentials** from `localStorage` (`mwords:connection`). Always
+   render `ConnectionForm` on boot, pre-filling fields from the stored
+   blob when present. **No auto-connect** — the user clicks "Save &
+   connect" to proceed. Rationale: reloading the page is the natural
+   place to switch brokers or fix a bad URL, and an auto-connect would
+   either flash the app for a moment before failing, or fire off
+   credentials the user wanted to edit.
 3. **Connect** to the broker via WSS using `mqtt.js`, configured with
    `resubscribe: false` (our wrapper manages subscriptions explicitly;
    see step 9 for the reconnect path) and `reconnectPeriod: 1000` (the
@@ -432,6 +437,11 @@ mwords/
 
 ## Connection form
 
+The form is the app's landing screen on every boot (see lifecycle step
+2) and is also re-shown by **Settings → Disconnect** mid-session. When
+stored credentials exist, every field is pre-filled from
+`localStorage`; the user can edit any of them before submitting.
+
 - Three fields: WebSocket URL (e.g., `wss://broker.example.com:8884/mqtt`),
   username, password.
 - Optional fourth: **base prefix** (default `mwords`). Validated against
@@ -449,9 +459,22 @@ mwords/
   doesn't want to sync, or general debugging. The broker remains the
   source of truth, so the in-memory store is reconciled by retained
   replay on the next subscribe cycle.
-- "Disconnect / forget" deletes the `mwords:connection` key from
-  `localStorage` (credentials, prefix, and `lastGroup` go with it) and
-  also clears the queue. Strict superset of "Clear pending queue."
+
+### Settings → Disconnect controls
+
+The connection form's exit paths have mirrors inside Settings, so the
+user can drop the broker connection mid-session without losing their
+place:
+
+- **"Disconnect"** — tears down the MQTT client and returns to the
+  connection form with all stored values intact. Nothing is removed
+  from `localStorage`; the user is expected to either edit a field and
+  reconnect, or just resubmit. The pending queue is left alone (it
+  drains on the next connect).
+- **"Disconnect & forget"** — also removes the `mwords:connection` key
+  from `localStorage` (credentials, prefix, and `lastGroup` go with
+  it) and clears the queue. Strict superset of "Disconnect" + "Clear
+  pending queue." The connection form then opens with empty fields.
 
 ## Group picker
 

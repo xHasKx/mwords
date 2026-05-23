@@ -7,7 +7,11 @@
   }
 
   function disconnect() {
-    if (!confirm('Disconnect and forget credentials?')) return;
+    app.disconnect();
+  }
+
+  function disconnectAndForget() {
+    if (!confirm('Disconnect and forget stored credentials?')) return;
     app.disconnectAndForget();
   }
 </script>
@@ -34,6 +38,10 @@
 
   <div class="card col">
     <div><strong>Connection</strong></div>
-    <button class="danger" onclick={disconnect}>Disconnect &amp; forget</button>
+    <div class="muted">Disconnect returns to the connect form with credentials kept; forget also wipes them from local storage.</div>
+    <div class="row buttons">
+      <button onclick={disconnect}>Disconnect</button>
+      <button class="danger" onclick={disconnectAndForget}>Disconnect &amp; forget</button>
+    </div>
   </div>
 </div>

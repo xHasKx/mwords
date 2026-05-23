@@ -30,18 +30,31 @@ class AppStore {
   private storedConn: StoredConnection | null = null;
 
   init(): void {
-    const stored = creds.read();
-    if (!stored) {
-      this.view = 'connect';
-      return;
-    }
-    this.storedConn = stored;
-    this.connect(stored);
+    // Always land on the connect form; the user must click Save & connect
+    // to proceed, even when stored credentials exist. The form pre-fills
+    // itself from `storedConnection()` so editing-then-reconnecting is one
+    // tap of friction, not three.
+    this.storedConn = creds.read();
+    this.view = 'connect';
   }
 
   connect(conn: StoredConnection): void {
-    creds.write(conn);
-    this.storedConn = conn;
+    // The form submits the four user-editable fields; merge lastGroup in
+    // from the existing stored blob so a reconnect auto-selects the same
+    // group. lastGroup is namespaced to a prefix — drop it if the prefix
+    // (or the broker) just changed.
+    const existing = creds.read();
+    const preserveLast =
+      existing &&
+      existing.prefix === conn.prefix &&
+      existing.url === conn.url &&
+      existing.username === conn.username &&
+      existing.lastGroup;
+    const merged: StoredConnection = preserveLast
+      ? { ...conn, lastGroup: existing.lastGroup }
+      : conn;
+    creds.write(merged);
+    this.storedConn = merged;
     this.connectionError = null;
     this.groups.clear();
     this.words.clear();
@@ -57,18 +70,26 @@ class AppStore {
     this.mqtt.connect(conn);
   }
 
-  disconnectAndForget(): void {
+  disconnect(): void {
+    // Tear down the MQTT client and return to the connect form.
+    // Credentials and lastGroup stay in localStorage; pending queue (when
+    // it exists, slice 2+) is left alone to drain on the next connect.
     this.mqtt?.disconnect();
     this.mqtt = null;
-    creds.forget();
-    this.storedConn = null;
     this.groups.clear();
     this.words.clear();
     this.srs.clear();
     this.activeGroupId = null;
     this.settings = defaultSettings();
-    this.view = 'connect';
     this.connection = 'idle';
+    this.connectionError = null;
+    this.view = 'connect';
+  }
+
+  disconnectAndForget(): void {
+    this.disconnect();
+    creds.forget();
+    this.storedConn = null;
   }
 
   private handleState(state: ConnectionState, err?: Error): void {
