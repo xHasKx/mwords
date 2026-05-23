@@ -11,8 +11,17 @@
   let autoconnect = $state(false);
   let error = $state<string | null>(null);
 
+  const incoming = app.shareImport;
   const stored = app.storedConnection();
-  if (stored) {
+  if (incoming) {
+    // Share-link path: pre-fill from the URL payload. Don't carry over
+    // autoconnect from the sender — the receiver opts in deliberately.
+    url = incoming.url;
+    username = incoming.username;
+    password = incoming.password;
+    prefix = incoming.prefix;
+    autoconnect = false;
+  } else if (stored) {
     url = stored.url;
     username = stored.username;
     password = stored.password;
@@ -45,6 +54,11 @@
 
 <form class="col" onsubmit={submit}>
   <h1>Connect</h1>
+  {#if incoming}
+    <div class="note" role="status">
+      Connection details pre-filled from a share link. Review and click <strong>Save &amp; connect</strong> to use them.
+    </div>
+  {/if}
   <div>
     <label for="url">WebSocket URL</label>
     <input id="url" type="url" bind:value={url} placeholder="wss://broker.example.com:8884/mqtt" />
@@ -85,5 +99,14 @@
   .check input[type='checkbox'] {
     width: auto;
     margin: 0;
+  }
+  .note {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    font-size: 0.9rem;
+    color: var(--fg-2);
   }
 </style>

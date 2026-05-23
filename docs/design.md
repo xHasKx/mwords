@@ -489,6 +489,36 @@ place:
   it) and clears the queue. Strict superset of "Disconnect" + "Clear
   pending queue." The connection form then opens with empty fields.
 
+### Settings → Share connection link
+
+A "Copy share link" affordance in the same Connection card produces a
+URL the user can paste to another device to bootstrap the same broker
+binding without re-typing.
+
+- **Payload.** The four connection-form fields — `url`, `username`,
+  `password`, `prefix` — JSON-stringified, then URL-safe-base64
+  encoded (`+→-`, `/→_`, stripped `=`). Per-device state (`lastGroup`,
+  `autoconnect`) is intentionally **not** included. Implemented in
+  `lib/share.ts` (`encodeShare` / `decodeShare`).
+- **URL shape.** `<origin><pathname>#share=<base64>`. The payload sits
+  in the **hash fragment**, which the browser never sends to the
+  server, so the value never lands in access logs or referrers.
+- **Not encryption.** Base64 is obfuscation — anyone with the URL has
+  the credentials in plaintext. The UI says so. The point is to keep
+  creds non-readable from an address bar (shoulder-surfing,
+  screen-shares) without taking a key-management dependency.
+- **Receiver behavior.** On `app.init()`, if `location.hash` starts
+  with `#share=`, decode → set `shareImport` on the store → scrub the
+  hash via `history.replaceState`. Autoconnect is **suppressed** for
+  this session even when `storedConn.autoconnect` is true. The connect
+  form pre-fills from `shareImport` (with `autoconnect` reset to
+  `false` — the receiver opts in deliberately) and shows a banner
+  flagging that the values came from a share link. Existing stored
+  creds are untouched until the user submits.
+- **Failure modes.** Malformed payloads — bad base64, non-JSON,
+  missing or wrong-typed fields — are silently dropped (the hash is
+  still scrubbed) and the form falls back to the stored connection.
+
 ## Group picker
 
 - Each row shows the group name only — no counts, due-today badges, or

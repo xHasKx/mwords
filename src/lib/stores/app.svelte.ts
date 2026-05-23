@@ -18,6 +18,9 @@ import * as creds from '../storage/credentials.ts';
 import type { StoredConnection } from '../storage/credentials.ts';
 import { queue } from '../mqtt/queue.ts';
 import { isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
+import { decodeShare, encodeShare, type SharePayload } from '../share.ts';
+
+const SHARE_HASH_PREFIX = '#share=';
 
 type View = 'connect' | 'picker' | 'review' | 'edit' | 'settings';
 
@@ -49,6 +52,11 @@ class AppStore {
   // reached as the natural post-connect landing (no group to go back
   // to), so the Back button stays hidden.
   pickerReturn = $state<View | null>(null);
+  // Set by init() if the page was opened with a `#share=` hash. Carries
+  // the imported broker URL / username / password / prefix the form
+  // should pre-fill from. Cleared after the user submits (so the next
+  // mount of the form falls back to localStorage).
+  shareImport = $state<SharePayload | null>(null);
 
   private mqtt: MqttWrapper | null = null;
   private storedConn: StoredConnection | null = null;
@@ -68,12 +76,47 @@ class AppStore {
     this.storedConn = creds.read();
     this.view = 'connect';
     void queue.init();
+    // Share-link arrival: pre-fill the form from the URL hash and skip
+    // autoconnect so the user can review the incoming creds before
+    // committing. Hash is scrubbed so it doesn't sit in the address
+    // bar / browser history.
+    const shared = this.consumeShareHash();
+    if (shared) {
+      this.shareImport = shared;
+      return;
+    }
     if (this.storedConn?.autoconnect) {
       this.connect(this.storedConn);
     }
   }
 
+  private consumeShareHash(): SharePayload | null {
+    if (typeof window === 'undefined') return null;
+    const h = window.location.hash;
+    if (!h.startsWith(SHARE_HASH_PREFIX)) return null;
+    const decoded = decodeShare(h.slice(SHARE_HASH_PREFIX.length));
+    // Always scrub the hash, even on decode failure — a malformed share
+    // shouldn't stick around.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    return decoded;
+  }
+
+  buildShareUrl(): string | null {
+    const conn = this.storedConn;
+    if (!conn) return null;
+    const encoded = encodeShare({
+      url: conn.url,
+      username: conn.username,
+      password: conn.password,
+      prefix: conn.prefix,
+    });
+    if (typeof window === 'undefined') return null;
+    const { origin, pathname } = window.location;
+    return `${origin}${pathname}${SHARE_HASH_PREFIX}${encoded}`;
+  }
+
   connect(conn: StoredConnection): void {
+    this.shareImport = null;
     const existing = creds.read();
     const preserveLast =
       existing &&

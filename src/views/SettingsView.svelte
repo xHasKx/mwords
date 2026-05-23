@@ -8,6 +8,10 @@
     { value: 'serial', label: 'Serial', hint: 'Walk the deck in stable list order.' },
   ];
 
+  let shareUrl = $state<string | null>(null);
+  let shareStatus = $state<'idle' | 'copied' | 'manual'>('idle');
+  let shareStatusTimer: number | null = null;
+
   async function setMode(m: SrsMode) {
     await app.updateSettings({ srsMode: m });
   }
@@ -23,6 +27,25 @@
   function disconnectAndForget() {
     if (!confirm('Disconnect and forget stored credentials?')) return;
     void app.disconnectAndForget();
+  }
+
+  async function shareConnection() {
+    const url = app.buildShareUrl();
+    if (!url) return;
+    shareUrl = url;
+    if (shareStatusTimer !== null) clearTimeout(shareStatusTimer);
+    try {
+      await navigator.clipboard.writeText(url);
+      shareStatus = 'copied';
+      shareStatusTimer = window.setTimeout(() => {
+        shareStatus = 'idle';
+        shareUrl = null;
+      }, 2500);
+    } catch {
+      // Clipboard unavailable (insecure origin, permission denied) —
+      // surface the URL so the user can copy it manually.
+      shareStatus = 'manual';
+    }
   }
 </script>
 
@@ -65,6 +88,19 @@
       <button onclick={disconnect}>Disconnect</button>
       <button class="danger" onclick={disconnectAndForget}>Disconnect &amp; forget</button>
     </div>
+    <div class="muted share-hint">
+      Share a link that pre-fills broker URL, prefix, and credentials on another device. Credentials are base64-encoded — not encrypted — so only share with people you trust.
+    </div>
+    <div class="row">
+      <button onclick={shareConnection}>Copy share link</button>
+      {#if shareStatus === 'copied'}
+        <span class="muted" role="status">Copied!</span>
+      {/if}
+    </div>
+    {#if shareStatus === 'manual' && shareUrl}
+      <div class="muted">Couldn't access the clipboard. Copy the URL manually:</div>
+      <input class="manual-share" type="text" readonly value={shareUrl} aria-label="Share URL" />
+    {/if}
   </div>
 </div>
 
@@ -83,4 +119,6 @@
     text-align: left;
     padding: 0.6rem 0.85rem;
   }
+  .share-hint { font-size: 0.85rem; }
+  .manual-share { font-family: monospace; font-size: 0.8rem; }
 </style>
