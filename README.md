@@ -62,5 +62,12 @@ push to `release` (or via the Actions UI's "Run workflow" button), runs
 `release`'s HEAD is the "what's live" pointer; `git log master..release`
 shows undeployed work.
 
-One-time setup: **Settings → Pages → Build and deployment → Source:
-GitHub Actions**.
+One-time setup:
+
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. **Settings → Environments → `github-pages` → Deployment branches
+   and tags**: add `release` (or switch to *All branches*). GitHub
+   seeds this list with `main`/`master` only, so a push from
+   `release` is otherwise rejected at the deploy step with
+   *"Branch is not allowed to deploy to github-pages due to
+   environment protection rules."*

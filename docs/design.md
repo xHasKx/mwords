@@ -1156,8 +1156,16 @@ over WebSocket** — TCP-only brokers won't work.
           uses: actions/deploy-pages@v5
   ```
 
-  One-time repo setup: **Settings → Pages → Build and deployment →
-  Source: GitHub Actions**. Done.
+  One-time repo setup:
+
+  1. **Settings → Pages → Build and deployment → Source: GitHub
+     Actions**.
+  2. **Settings → Environments → `github-pages` → Deployment
+     branches and tags**: add `release` (or switch to *All
+     branches*). The default rule allows only `main`/`master`, so
+     a push from `release` is otherwise rejected at the deploy
+     step with *"Branch is not allowed to deploy to github-pages
+     due to environment protection rules."*
 
 ## Out of scope for v1
 
