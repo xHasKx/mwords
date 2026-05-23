@@ -8,10 +8,31 @@
 </script>
 
 <nav class="nav" aria-label="Main">
-  <button class="tab" class:active={app.view === 'review'} aria-current={app.view === 'review' ? 'page' : undefined} onclick={() => go('review')}>Review</button>
-  <button class="tab" class:active={app.view === 'edit'} aria-current={app.view === 'edit' ? 'page' : undefined} onclick={() => go('edit')}>Edit</button>
-  <button class="tab" class:active={app.view === 'settings'} aria-current={app.view === 'settings' ? 'page' : undefined} onclick={() => go('settings')}>Settings</button>
-  <button class="tab" onclick={switchGroup} aria-label="Switch group" title="Switch group">⇄</button>
+  <button
+    class="tab icon"
+    class:active={app.view === 'review'}
+    aria-current={app.view === 'review' ? 'page' : undefined}
+    aria-label="Review"
+    title="Review"
+    onclick={() => go('review')}
+  >📖</button>
+  <button
+    class="tab icon"
+    class:active={app.view === 'edit'}
+    aria-current={app.view === 'edit' ? 'page' : undefined}
+    aria-label="Edit"
+    title="Edit"
+    onclick={() => go('edit')}
+  >📝</button>
+  <button
+    class="tab icon"
+    class:active={app.view === 'settings'}
+    aria-current={app.view === 'settings' ? 'page' : undefined}
+    aria-label="Settings"
+    title="Settings"
+    onclick={() => go('settings')}
+  >⚙</button>
+  <button class="tab icon" onclick={switchGroup} aria-label="Switch group" title="Switch group">⇄</button>
   <div class="badge-wrap"><ConnectionBadge /></div>
 </nav>
 
@@ -36,7 +57,9 @@
     color: var(--fg-2);
     font-size: 0.9rem;
   }
+  .tab.icon { font-size: 1.4rem; line-height: 1; padding: 0.5rem 0.25rem; }
   .tab.active { color: var(--accent); font-weight: 600; }
+  .tab.icon.active { filter: drop-shadow(0 0 0.3rem var(--accent)); }
   .badge-wrap {
     padding: 0 0.5rem;
     border-left: 1px solid var(--border);
