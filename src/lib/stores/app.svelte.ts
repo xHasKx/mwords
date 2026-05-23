@@ -8,6 +8,7 @@ import { applyGrade } from '../srs/picker.ts';
 import * as creds from '../storage/credentials.ts';
 import type { StoredConnection } from '../storage/credentials.ts';
 import { queue } from '../mqtt/queue.ts';
+import { isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
 
 type View = 'connect' | 'picker' | 'review' | 'edit' | 'settings';
 
@@ -38,6 +39,14 @@ class AppStore {
   private mqtt: MqttWrapper | null = null;
   private storedConn: StoredConnection | null = null;
 
+  // Tombstone watermarks. Map<id, lastTombstoneTimestampSec>. In-memory
+  // only — survives reconnects within a session, lost on reload. Stops
+  // a peer's stale content publish from resurrecting a tombstoned id
+  // while we're still online. See design.md → Application lifecycle
+  // step 9, "Tombstone watermark".
+  private wordWatermark = new Map<string, number>();
+  private srsWatermark = new Map<string, number>();
+
   private syncResolve: (() => void) | null = null;
   private syncTimer: number | null = null;
 
@@ -46,9 +55,6 @@ class AppStore {
     this.view = 'connect';
     void queue.init();
     if (this.storedConn?.autoconnect) {
-      // Opted-in skip the form on boot. The form may briefly flash
-      // visible before view transitions on `connected` — acceptable
-      // for an explicit opt-in.
       this.connect(this.storedConn);
     }
   }
@@ -70,6 +76,8 @@ class AppStore {
     this.groups.clear();
     this.words.clear();
     this.srs.clear();
+    this.wordWatermark.clear();
+    this.srsWatermark.clear();
     this.activeGroupId = null;
     this.settings = defaultSettings();
 
@@ -94,13 +102,13 @@ class AppStore {
     this.groups.clear();
     this.words.clear();
     this.srs.clear();
+    this.wordWatermark.clear();
+    this.srsWatermark.clear();
     this.activeGroupId = null;
     this.settings = defaultSettings();
     this.connection = 'idle';
     this.connectionError = null;
     this.nextAttemptAt = null;
-    // Clear the autoconnect opt-in — the user has expressed they want
-    // to see the form on next boot.
     if (this.storedConn?.autoconnect) {
       this.storedConn = { ...this.storedConn, autoconnect: false };
       creds.update({ autoconnect: false });
@@ -134,9 +142,23 @@ class AppStore {
     // Drain pending intents before subscribing. Guarantees the broker
     // holds our latest values by the time retained replay reaches us.
     await queue.drainAll();
-    if (!this.mqtt) return; // bail if we disconnected mid-drain
+    if (!this.mqtt) return;
     await this.subscribeAndSync([groupsFilter(prefix), settingsTopic(prefix)]);
-    this.afterPhase1();
+    if (!this.mqtt) return;
+
+    if (this.view === 'connect' || this.view === 'picker') {
+      this.afterPhase1();
+      return;
+    }
+    // Reconnect path — we were already in a group view. Re-subscribe
+    // phase-2 for the active group (also handles the offline-create
+    // case where phase-2 was deferred until first connect).
+    if (this.activeGroupId) {
+      await this.subscribeAndSync([
+        wordsFilter(prefix, this.activeGroupId),
+        srsFilter(prefix, this.activeGroupId),
+      ]);
+    }
   }
 
   private afterPhase1(): void {
@@ -151,9 +173,6 @@ class AppStore {
     }
   }
 
-  // Subscribe and wait for SUBACK + a 500 ms quiet window. Each incoming
-  // message resets the quiet window, so retained replay finishes draining
-  // before we resolve.
   private async subscribeAndSync(filters: string[]): Promise<void> {
     if (!this.mqtt) return;
     await this.mqtt.subscribeMany(filters);
@@ -186,16 +205,29 @@ class AppStore {
     }
   }
 
-  // LWW gate. Returns true if the incoming message should be applied.
-  // Slice 3: no tombstone watermark — that lands in slice 4.
+  // LWW gate per design step 9.
+  // Returns true if the incoming message should be applied, given:
+  //   - localUpdated: undefined / 0-sentinel / positive number from the
+  //     local record (or settings.updated for the singleton).
+  //   - watermarkAt: the tombstone watermark for this id (Map.get
+  //     yields undefined if absent). Only consulted when the local
+  //     record is missing/sentinel.
+  //   - incomingUP: number parsed from the timestamp User Property, or
+  //     null if absent / unusable.
   private acceptByGate(
     localUpdated: number | undefined,
+    watermarkAt: number | undefined,
     incomingUP: number | null,
   ): boolean {
-    if (incomingUP === null) return true;       // no usable UP
-    if (localUpdated === undefined) return true; // no local record
-    if (localUpdated <= 0) return true;          // sentinel default
-    return incomingUP >= localUpdated;
+    if (incomingUP === null) return true;
+    if (localUpdated !== undefined && localUpdated > 0) {
+      return incomingUP >= localUpdated;
+    }
+    // No local record (or sentinel 0). Consult the watermark.
+    if (watermarkAt !== undefined) {
+      return incomingUP > watermarkAt;
+    }
+    return true;
   }
 
   private handleMessage(topic: string, payload: Uint8Array, timestampUP?: string): void {
@@ -203,24 +235,24 @@ class AppStore {
     const parsed = parseTopic(this.storedConn.prefix, topic);
     const up = parseUP(timestampUP);
 
-    // Every message — gated or dropped — counts against the sync
-    // debounce: when retained replay is flooding in, this keeps the
-    // 500 ms quiet window honest.
     this.kickSyncDebounce();
 
-    // Tombstone: zero-byte short-circuit (no JSON, no payload checks).
+    // Tombstone path — zero-byte short-circuit. The LWW gate runs on
+    // the raw UP; no JSON.parse, no type guard.
     if (payload.byteLength === 0) {
       if (parsed.kind === 'word') {
         const local = this.words.get(parsed.id);
-        if (!this.acceptByGate(local?.updated, up)) return;
+        if (!this.acceptByGate(local?.updated, this.wordWatermark.get(parsed.id), up)) return;
         this.words.delete(parsed.id);
+        if (up !== null) this.wordWatermark.set(parsed.id, up);
       } else if (parsed.kind === 'srs') {
         const local = this.srs.get(parsed.id);
-        if (!this.acceptByGate(local?.updated, up)) return;
+        if (!this.acceptByGate(local?.updated, this.srsWatermark.get(parsed.id), up)) return;
         this.srs.delete(parsed.id);
+        if (up !== null) this.srsWatermark.set(parsed.id, up);
       } else if (parsed.kind === 'group') {
         const local = this.groups.get(parsed.gid);
-        if (!this.acceptByGate(local?.updated, up)) return;
+        if (!this.acceptByGate(local?.updated, undefined, up)) return;
         this.groups.delete(parsed.gid);
       }
       return;
@@ -233,33 +265,44 @@ class AppStore {
       console.warn('mwords: bad JSON at', topic);
       return;
     }
-    if (!data || typeof data !== 'object') return;
 
     if (parsed.kind === 'group') {
-      const g = data as Group;
-      if (g.id !== parsed.gid || typeof g.name !== 'string') return;
-      const local = this.groups.get(g.id);
-      if (!this.acceptByGate(local?.updated, up)) return;
-      this.groups.set(g.id, g);
+      if (!isGroup(data, parsed.gid)) {
+        console.warn('mwords: invalid Group at', topic);
+        return;
+      }
+      const local = this.groups.get(data.id);
+      if (!this.acceptByGate(local?.updated, undefined, up)) return;
+      this.groups.set(data.id, data);
     } else if (parsed.kind === 'settings') {
-      const s = data as Settings;
-      if (!s || typeof s.srsMode !== 'string') return;
-      if (!this.acceptByGate(this.settings.updated, up)) return;
-      this.settings = s;
+      if (!isSettings(data)) {
+        console.warn('mwords: invalid Settings at', topic);
+        return;
+      }
+      if (!this.acceptByGate(this.settings.updated, undefined, up)) return;
+      this.settings = data;
     } else if (parsed.kind === 'word') {
       if (this.activeGroupId !== parsed.gid) return;
-      const w = data as Word;
-      if (w.id !== parsed.id || typeof w.text !== 'string') return;
-      const local = this.words.get(w.id);
-      if (!this.acceptByGate(local?.updated, up)) return;
-      this.words.set(w.id, w);
+      if (!isWord(data, parsed.id)) {
+        console.warn('mwords: invalid Word at', topic);
+        return;
+      }
+      const local = this.words.get(data.id);
+      if (!this.acceptByGate(local?.updated, this.wordWatermark.get(data.id), up)) return;
+      this.words.set(data.id, data);
+      // Content accepted → drop watermark (the local record's own
+      // `updated` is now the comparison point).
+      this.wordWatermark.delete(data.id);
     } else if (parsed.kind === 'srs') {
       if (this.activeGroupId !== parsed.gid) return;
-      const s = data as SrsState;
-      if (s.id !== parsed.id || typeof s.ease !== 'number') return;
-      const local = this.srs.get(s.id);
-      if (!this.acceptByGate(local?.updated, up)) return;
-      this.srs.set(s.id, s);
+      if (!isSrsState(data, parsed.id)) {
+        console.warn('mwords: invalid SrsState at', topic);
+        return;
+      }
+      const local = this.srs.get(data.id);
+      if (!this.acceptByGate(local?.updated, this.srsWatermark.get(data.id), up)) return;
+      this.srs.set(data.id, data);
+      this.srsWatermark.delete(data.id);
     }
   }
 
@@ -283,12 +326,13 @@ class AppStore {
   }
 
   async selectGroup(gid: string): Promise<void> {
-    if (!this.mqtt || !this.storedConn) return;
+    if (!this.storedConn) return;
     const prefix = this.storedConn.prefix;
     this.switching = true;
     try {
-      if (this.activeGroupId && this.activeGroupId !== gid) {
-        await this.mqtt.unsubscribeMany([
+      const connected = this.mqtt?.isConnected() === true;
+      if (connected && this.activeGroupId && this.activeGroupId !== gid) {
+        await this.mqtt!.unsubscribeMany([
           wordsFilter(prefix, this.activeGroupId),
           srsFilter(prefix, this.activeGroupId),
         ]);
@@ -297,7 +341,11 @@ class AppStore {
       this.srs.clear();
       this.activeGroupId = gid;
       creds.update({ lastGroup: gid });
-      await this.subscribeAndSync([wordsFilter(prefix, gid), srsFilter(prefix, gid)]);
+      if (connected) {
+        await this.subscribeAndSync([wordsFilter(prefix, gid), srsFilter(prefix, gid)]);
+      }
+      // Else: offline — defer the subscribe. afterConnect on the next
+      // successful connect will subscribe phase-2 for activeGroupId.
       this.view = 'review';
     } finally {
       this.switching = false;
@@ -362,6 +410,13 @@ class AppStore {
     const prevSrs = this.srs.get(id);
     this.words.delete(id);
     this.srs.delete(id);
+    // Seed the watermark so a peer's queued-while-offline content for
+    // this id can't resurrect it before our tombstone publish lands.
+    // The flush-time UP on the tombstone will overwrite this value if
+    // it's larger (the gate uses `>` against the watermark).
+    const seed = Date.now() / 1000;
+    this.wordWatermark.set(id, seed);
+    this.srsWatermark.set(id, seed);
     try {
       await queue.publishTombstone(
         wordTopic(this.storedConn.prefix, this.activeGroupId, id),
@@ -372,6 +427,8 @@ class AppStore {
     } catch (err) {
       if (prevWord) this.words.set(id, prevWord);
       if (prevSrs) this.srs.set(id, prevSrs);
+      this.wordWatermark.delete(id);
+      this.srsWatermark.delete(id);
       this.publishError = (err as Error).message;
       throw err;
     }

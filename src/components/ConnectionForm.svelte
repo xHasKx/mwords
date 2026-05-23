@@ -1,6 +1,8 @@
 <script lang="ts">
   import { app } from '../lib/stores/app.svelte.ts';
   import { isValidPrefix } from '../lib/mqtt/topics.ts';
+  import { queue } from '../lib/mqtt/queue.ts';
+  import { queueStore } from '../lib/stores/queue.svelte.ts';
 
   let url = $state('');
   let username = $state('');
@@ -32,6 +34,13 @@
       autoconnect,
     });
   }
+
+  function clearPending() {
+    const count = queueStore.pendingCount;
+    if (count === 0) return;
+    if (!confirm(`Discard ${count} pending change${count === 1 ? '' : 's'}? They will not be sent to the broker.`)) return;
+    void queue.clear();
+  }
 </script>
 
 <form class="col" onsubmit={submit}>
@@ -58,6 +67,11 @@
   </label>
   {#if error}<div class="error">{error}</div>{/if}
   <button type="submit" class="primary">Save &amp; connect</button>
+  {#if queueStore.pendingCount > 0}
+    <button type="button" class="danger" onclick={clearPending}>
+      Clear pending queue ({queueStore.pendingCount})
+    </button>
+  {/if}
 </form>
 
 <style>

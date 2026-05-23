@@ -28,6 +28,7 @@ const DB_VERSION = 1;
 const STORE = 'intents';
 const TOPIC_INDEX = 'by_topic';
 const CAP = 10_000;
+const STALE_PUBLISHED_AT_SEC = 30;
 
 type DrainWaiter = { snapshot: Set<number>; resolve: () => void };
 
@@ -58,6 +59,24 @@ export class PublishQueue {
         store.createIndex(TOPIC_INDEX, 'topic', { unique: false });
       },
     });
+    // Force-quits and crashes can leave a `publishedAt` marker behind
+    // without ever firing the `close`/`offline` event that clears it.
+    // The next flush would skip those rows forever. Wipe markers older
+    // than the threshold so the next connect retries them. Anything
+    // newer is presumed live (sibling tab actually mid-publish).
+    const cutoff = Date.now() / 1000 - STALE_PUBLISHED_AT_SEC;
+    const tx = this.db.transaction(STORE, 'readwrite');
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+      const row = cursor.value as PublishIntent;
+      if (row.publishedAt !== undefined && row.publishedAt < cutoff) {
+        const next: PublishIntent = { ...row };
+        delete next.publishedAt;
+        await cursor.update(next);
+      }
+      cursor = await cursor.continue();
+    }
+    await tx.done;
     this.pendingCount = await this.db.count(STORE);
     this.notify();
   }

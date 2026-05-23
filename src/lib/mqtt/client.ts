@@ -44,7 +44,6 @@ export class MqttWrapper {
     this.client = client;
 
     client.on('connect', () => {
-      this.onState('connected');
       // Reset both fields — mqtt.js consumes `reconnectPeriod` between
       // `close` and the next `reconnect` event, so resetting only the
       // local mirror leaves a stale period in effect for the first
@@ -52,11 +51,11 @@ export class MqttWrapper {
       this.nextBackoff = MIN_BACKOFF;
       client.options.reconnectPeriod = MIN_BACKOFF;
       this.onNextAttempt?.(null);
-      // Re-issue any active subscriptions (slice 3 still pre-subscribes
-      // here; the LWW gate in AppStore handles retained replay).
-      for (const filter of this.currentSubscriptions) {
-        client.subscribe(filter, { qos: 1 });
-      }
+      // No auto-re-issue of subscriptions — AppStore.afterConnect drives
+      // all (re)subscriptions through subscribeAndSync so the 500 ms
+      // debounce applies on every connect, and we don't double-subscribe
+      // phase-1 on reconnect.
+      this.onState('connected');
     });
     client.on('reconnect', () => {
       // mqtt.js is actively dialing now — clear the countdown target,
