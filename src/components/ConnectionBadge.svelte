@@ -41,9 +41,9 @@
   <span class="text">{text}</span>
   <span
     class="pending"
-    style:visibility={queueStore.pendingCount > 0 ? 'visible' : 'hidden'}
+    style:visibility={queueStore.pendingCount >= 2 ? 'visible' : 'hidden'}
     aria-label="pending publishes"
-    aria-hidden={queueStore.pendingCount > 0 ? undefined : 'true'}
+    aria-hidden={queueStore.pendingCount >= 2 ? undefined : 'true'}
   >
     {queueStore.pendingCount}
   </span>
