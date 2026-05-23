@@ -17,6 +17,13 @@
   let translation = $state(untrack(() => initial?.translation ?? ''));
   let busy = $state(false);
   let error = $state<string | null>(null);
+  let textInput: HTMLInputElement | null = $state(null);
+
+  // Focus the Text field as soon as the dialog mounts — the user
+  // tapped + (or a row) intending to type, so move the caret there.
+  $effect(() => {
+    textInput?.focus();
+  });
 
   async function save(e: Event) {
     e.preventDefault();
@@ -53,7 +60,7 @@
     <h2>{initial ? 'Edit word' : 'Add word'}</h2>
     <div>
       <label for="text">Text</label>
-      <input id="text" bind:value={text} autocapitalize="off" autocomplete="off" />
+      <input id="text" bind:this={textInput} bind:value={text} autocapitalize="off" autocomplete="off" />
     </div>
     <div>
       <label for="tr">Translation</label>
