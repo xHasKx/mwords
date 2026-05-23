@@ -1,0 +1,63 @@
+import type { Grade, SrsState, Word } from '../types.ts';
+
+const QUALITY: Record<Grade, number> = {
+  again: 0,
+  hard: 3,
+  good: 4,
+  easy: 5,
+};
+
+export function transition(state: SrsState, grade: Grade, now: number): SrsState {
+  const q = QUALITY[grade];
+
+  let { ease, reps, intervalDays, lapses } = state;
+
+  if (q < 3) {
+    reps = 0;
+    intervalDays = 0;
+    lapses += 1;
+  } else {
+    if (reps === 0) intervalDays = 1;
+    else if (reps === 1) intervalDays = 6;
+    else intervalDays = Math.round(intervalDays * ease);
+    reps += 1;
+  }
+
+  ease = Math.max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+
+  return {
+    id: state.id,
+    ease,
+    intervalDays,
+    reps,
+    lapses,
+    due: now + intervalDays * 86_400,
+    lastGrade: grade,
+    reviewCount: state.reviewCount + 1,
+    updated: now,
+  };
+}
+
+export function nextIntervalDaysFor(state: SrsState, grade: Grade): number {
+  const q = QUALITY[grade];
+  if (q < 3) return 0;
+  if (state.reps === 0) return 1;
+  if (state.reps === 1) return 6;
+  return Math.round(state.intervalDays * state.ease);
+}
+
+export function pick(args: {
+  words: Word[];
+  srs: Map<string, SrsState>;
+  now: number;
+}): Word | null {
+  const due: { word: Word; dueAt: number }[] = [];
+  for (const word of args.words) {
+    const st = args.srs.get(word.id);
+    const dueAt = st ? st.due : args.now;
+    if (dueAt <= args.now) due.push({ word, dueAt });
+  }
+  if (due.length === 0) return null;
+  due.sort((a, b) => a.dueAt - b.dueAt || Number(a.word.id) - Number(b.word.id));
+  return due[0].word;
+}
