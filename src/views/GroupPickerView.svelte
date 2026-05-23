@@ -77,6 +77,55 @@
     }
   }
 
+  let portStatus = $state<string | null>(null);
+  let portError = $state<string | null>(null);
+  let fileInput: HTMLInputElement | null = $state(null);
+
+  const canPort = $derived(app.connection === 'connected');
+  const portHint = $derived(canPort ? undefined : 'Connect to the broker to import or export.');
+
+  async function doExport() {
+    portError = null;
+    portStatus = 'Exporting…';
+    busy = true;
+    try {
+      const r = await app.exportAll();
+      portStatus = `Saved as ${r.filename} (${r.groupCount} group${r.groupCount === 1 ? '' : 's'}, ${r.wordCount} word${r.wordCount === 1 ? '' : 's'}).`;
+    } catch (err) {
+      portStatus = null;
+      portError = (err as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  function pickImportFile() {
+    portError = null;
+    portStatus = null;
+    fileInput?.click();
+  }
+
+  async function onImportFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    // Reset so re-selecting the same file fires `change` again.
+    input.value = '';
+    if (!file) return;
+    portError = null;
+    portStatus = 'Importing…';
+    busy = true;
+    try {
+      const text = await file.text();
+      const r = await app.importAll(text);
+      portStatus = `Imported ${r.groupCount} new group${r.groupCount === 1 ? '' : 's'} and ${r.wordCount} word${r.wordCount === 1 ? '' : 's'}.`;
+    } catch (err) {
+      portStatus = null;
+      portError = (err as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+
   const sortedGroups = $derived(
     Array.from(app.groups.values()).sort((a, b) => Number(a.id) - Number(b.id)),
   );
@@ -151,6 +200,30 @@
     </div>
     {#if createError}<div class="error">{createError}</div>{/if}
   </form>
+
+  <div class="card col port">
+    <div><strong>Import / Export</strong></div>
+    <div class="muted port-hint">
+      Export your groups and words to a JSON file, or import a file from another mwords instance. Imports merge into existing groups by name; SRS history is not preserved.
+    </div>
+    <div class="row">
+      <button onclick={doExport} disabled={busy || !canPort} title={portHint}>
+        Export to file
+      </button>
+      <button onclick={pickImportFile} disabled={busy || !canPort} title={portHint}>
+        Import from file
+      </button>
+    </div>
+    <input
+      bind:this={fileInput}
+      type="file"
+      accept=".json,application/json"
+      onchange={onImportFile}
+      hidden
+    />
+    {#if portStatus}<div class="muted" role="status">{portStatus}</div>{/if}
+    {#if portError}<div class="error">{portError}</div>{/if}
+  </div>
 </div>
 
 <style>
@@ -208,4 +281,6 @@
   .create { margin-top: 1rem; }
   .row { gap: 0.5rem; }
   .row input { flex: 1; }
+  .port { margin-top: 0.5rem; }
+  .port-hint { font-size: 0.85rem; }
 </style>

@@ -19,6 +19,8 @@ import type { StoredConnection } from '../storage/credentials.ts';
 import { queue } from '../mqtt/queue.ts';
 import { isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
 import { decodeShare, encodeShare, type SharePayload } from '../share.ts';
+import { exportAll as exportAllOverNewClient, exportFilename, triggerDownload } from '../export.ts';
+import { parseImportFile } from '../import.ts';
 
 const SHARE_HASH_PREFIX = '#share=';
 
@@ -444,6 +446,98 @@ class AppStore {
       this.publishError = (err as Error).message;
       throw err;
     }
+  }
+
+  async exportAll(): Promise<{ filename: string; groupCount: number; wordCount: number }> {
+    if (!this.storedConn) throw new Error('not connected');
+    // Note: the *execution* gate is the fresh-client connect inside
+    // exportAllOverNewClient. The UI gates on `connection` separately
+    // so the button is visibly disabled when offline; this throw
+    // covers the race where the user clicks just as the live link
+    // drops.
+    if (this.connection !== 'connected') {
+      throw new Error('Connect to the broker before exporting.');
+    }
+    const payload = await exportAllOverNewClient(this.storedConn);
+    const filename = exportFilename();
+    triggerDownload(filename, JSON.stringify(payload));
+    let wordCount = 0;
+    for (const g of payload.groups) wordCount += g.words.length;
+    return { filename, groupCount: payload.groups.length, wordCount };
+  }
+
+  async importAll(fileText: string): Promise<{ groupCount: number; wordCount: number }> {
+    if (!this.storedConn) throw new Error('not connected');
+    if (this.connection !== 'connected') {
+      throw new Error('Connect to the broker before importing.');
+    }
+    const parsed = parseImportFile(fileText);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const prefix = this.storedConn.prefix;
+
+    // Build a "name → existing gid" lookup so duplicate-name groups
+    // from the file land in the existing local row instead of
+    // creating yet another. Existing local words are preserved
+    // (no dedup by text/translation — design.md "Import").
+    const groupsByName = new Map<string, string>();
+    for (const [gid, g] of this.groups) {
+      const n = g.name.trim();
+      if (!groupsByName.has(n)) groupsByName.set(n, gid);
+    }
+
+    // Single monotonic counter so every group / word created during
+    // this import gets a unique id, even if the loop body runs in
+    // the same millisecond.
+    const baseTs = Date.now();
+    let counter = 0;
+    const nextId = (): { id: string; ts: number } => {
+      counter += 1;
+      const t = baseTs + counter;
+      return { id: t.toString(), ts: t / 1000 };
+    };
+
+    let groupCount = 0;
+    let wordCount = 0;
+
+    for (const ig of parsed.file.groups) {
+      const name = ig.name.trim();
+      let targetGid = groupsByName.get(name);
+      if (!targetGid) {
+        const { id: gid, ts } = nextId();
+        const group: Group = { id: gid, name, created: ts, updated: ts };
+        this.groups.set(gid, group);
+        groupsByName.set(name, gid);
+        try {
+          await queue.publishIntent(groupTopic(prefix, gid), group);
+        } catch (err) {
+          this.groups.delete(gid);
+          throw err;
+        }
+        targetGid = gid;
+        groupCount += 1;
+      }
+      for (const iw of ig.words) {
+        const { id: wid, ts } = nextId();
+        const word: Word = {
+          id: wid,
+          text: iw.text,
+          translation: iw.translation,
+          created: ts,
+          updated: ts,
+        };
+        if (this.activeGroupId === targetGid) {
+          this.words.set(wid, word);
+        }
+        try {
+          await queue.publishIntent(wordTopic(prefix, targetGid, wid), word);
+        } catch (err) {
+          if (this.activeGroupId === targetGid) this.words.delete(wid);
+          throw err;
+        }
+        wordCount += 1;
+      }
+    }
+    return { groupCount, wordCount };
   }
 
   async selectGroup(gid: string): Promise<void> {
