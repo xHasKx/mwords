@@ -570,6 +570,145 @@ stale `Group` republish for the deleted id could in principle
 resurrect it. Accepted on the same "users rarely delete groups"
 basis as the broker caveat above.
 
+## Export and import
+
+A small "Import / Export" card on the group picker lets the user move
+their **content** between mwords instances. Scope is intentionally
+narrow:
+
+- **Content only.** Group names and word text/translation pairs only.
+  SRS state, ids, timestamps, settings, and per-device prefs
+  (`lastGroup`, `autoconnect`) are deliberately **not** in the file.
+  This is a way to share or seed *what to learn*, not a full backup
+  and restore. Re-importing a file into the same instance merges the
+  groups by name (see "Import" below) but duplicates every word
+  inside them with reset SRS state, because v1 doesn't dedup words
+  by `text` / `translation`.
+- **Format.** A single JSON file:
+  ```json
+  {
+    "version": 1,
+    "groups": [
+      {
+        "name": "German A1",
+        "words": [
+          { "text": "Hallo", "translation": "Hello" }
+        ]
+      }
+    ]
+  }
+  ```
+  Minified (`JSON.stringify(value)` — no indentation). The `version`
+  field lets the schema evolve without silently mis-parsing old
+  files.
+
+### Export
+
+- Button: "Export to file" in the group picker's Import/Export card.
+- Default filename: `mwords-export-YYYY-MM-DD-HH-MM-SS.json`
+  (local time). Including time lets multiple same-day exports
+  coexist on disk without a save-dialog overwrite prompt.
+- **Two gates, two purposes.**
+  - **UI gate (status flag).** The Export button is visibly
+    disabled while `app.connection !== 'connected'` (with a "Connect
+    to export" tooltip). Stops users from initiating an export that
+    can't run, instead of letting them click and watch it fail.
+  - **Execution gate (fresh-client probe).** When the button *is*
+    clicked, the export's own throw-away client tries to connect
+    against the same `StoredConnection`. If that fails, the export
+    surfaces a real connection error — independent of whatever
+    `app.connection` currently claims. The status flag can lag a
+    truly-broken link (e.g. a phantom-offline state), so the probe
+    is the source of truth at action time.
+- **Isolated transport.** The export opens a **separate, throw-away
+  mqtt.js client** using the same `StoredConnection` (URL,
+  credentials, protocol version) as the main client. The live
+  client's subscriptions, message handler, and reactive state are
+  not touched. Rationale:
+  - Live updates to the active group keep flowing through the main
+    client during the scan. No "Exporting…" curtain is required to
+    pause the rest of the app.
+  - No `handleMessage` refactor, no subscription juggling on the
+    main client, no risk that a failed scan leaves the live session
+    in a half-state.
+  - mqtt.js generates a random `clientId` per connection by default,
+    so the two simultaneous sessions to the same broker with the
+    same credentials don't collide.
+- **Mechanism.**
+  1. Lazy-import `mqtt` (already split out for the main client, so
+     no extra bundle cost on second use) and open a fresh client
+     against `storedConn`. Wait for `connect`.
+  2. Allocate the capture map: `Map<gid, { name?: string; words:
+     Map<wordId, {text: string; translation: string}> }>`.
+  3. `subscribe('<P>/g/#', { qos: 1 })` — one SUBSCRIBE packet with
+     one wildcard filter. No chunking concerns and no broker
+     filter-count ceiling to worry about.
+  4. The export client's message handler routes by parsed topic:
+     - `<P>/g/<G>` (group marker) → validate, set `capture[G].name`
+       (or remove the entry on tombstone).
+     - `<P>/g/<G>/words/<id>` → validate, set
+       `capture[G].words[id]` (or remove on tombstone).
+     - `<P>/g/<G>/srs/<id>` → ignored (export is content-only).
+  5. Wait for the same 500 ms post-message debounce mwords already
+     trusts for "synced". A local timer in the export module
+     resets on every incoming message; 500 ms of silence means the
+     retained replay drained.
+  6. Snapshot the capture into the export JSON (dropping groups
+     whose name was tombstoned away, dropping word entries that
+     went tombstone). Trigger a browser download via `Blob` +
+     `URL.createObjectURL` + a synthetic `<a download>` click.
+  7. `client.end(true)` to close the export client.
+- **No "Exporting…" overlay needed**, because the main UI keeps
+  working. A small inline status next to the button ("Exporting…"
+  → "Saved as mwords-export-…json") is enough.
+- **Failure modes.** Bad credentials / unreachable broker → the
+  fresh client's `connect` event never fires; surface a clean error
+  with a hint to check the connection. Mid-scan disconnect → same:
+  the timer can't drain, so we time out after, say, 10 s of total
+  scan time and surface "Export interrupted, try again."
+
+### Import
+
+- Button: "Import from file" in the same card, behind a hidden
+  `<input type="file" accept=".json">` that the button triggers
+  programmatically.
+- The file is parsed and validated against the v1 schema (object
+  with `version: 1`, `groups: array`, each group with a non-empty
+  trimmed `name` and a `words` array of `{text, translation}`
+  objects). On any validation failure: no state changes, surface a
+  clear error.
+- **Merge by group name.** For each group in the file:
+  - If a local group already exists with the same trimmed name,
+    merge into it: append every imported word as a *new* word
+    (fresh id, fresh timestamps, default SRS state). Existing
+    words in that group are left untouched — no de-duplication by
+    text/translation in v1.
+  - If no local group matches, create a new group (fresh id, fresh
+    timestamps) and import every word into it.
+- All publishes go through the existing PublishQueue, so the import
+  is resilient to a flaky connection and idempotent under the same
+  retry semantics as normal edits.
+- Active subscriptions are unchanged — imported words for the
+  active group will land in `app.words` naturally as their publishes
+  PUBACK and replay back to us.
+- An "Importing…" overlay blocks input while publishes are
+  enqueued. The card briefly reports "Imported N groups, M words"
+  on completion.
+- **Not a transaction.** A failure partway through (queue cap hit,
+  user navigates away) leaves whatever was already enqueued in the
+  queue; it flushes on the next connect. Documented; acceptable for
+  v1.
+
+### Caveats
+
+- **Not a backup.** SRS state is not preserved.
+- **Offline export is a no-op.** v1 requires the broker to be
+  reachable. An offline-tolerant export would need words for every
+  group cached locally, which mwords doesn't do today.
+- **Atomicity.** A peer editing a word during the scan may produce a
+  before/after mix (some words pre-edit, some post-edit). Bounded by
+  the 500 ms debounce; accepted for v1.
+
 ## Offline behavior
 
 The MQTT broker is the source of truth, but connectivity is unreliable —
