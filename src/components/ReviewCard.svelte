@@ -28,11 +28,13 @@
     overflow-wrap: anywhere;
   }
   .front {
-    font-size: 1.7rem;
-    font-weight: 500;
+    font-size: 2rem;
+    font-weight: 600;
   }
   .back {
-    font-size: 1.4rem;
+    font-size: 1.2rem;
+    font-weight: 400;
+    font-style: italic;
     color: var(--fg-2);
   }
   hr {
