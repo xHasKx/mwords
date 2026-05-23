@@ -29,31 +29,34 @@
 <div class="col">
   <h1>Settings</h1>
 
-  <div class="card col">
-    <div><strong>SRS mode</strong></div>
-    <div class="col" role="radiogroup">
+  <fieldset class="card col">
+    <legend><strong>SRS mode</strong></legend>
+    <div class="col">
       {#each modes as m (m.value)}
         <button
           class={app.settings.srsMode === m.value ? 'primary' : ''}
+          aria-pressed={app.settings.srsMode === m.value}
           onclick={() => setMode(m.value)}>
           <div class="mode-label">{m.label}</div>
           <div class="mode-hint">{m.hint}</div>
         </button>
       {/each}
     </div>
-  </div>
+  </fieldset>
 
-  <div class="card col">
-    <div><strong>Direction</strong></div>
-    <div class="row" role="radiogroup">
+  <fieldset class="card col">
+    <legend><strong>Direction</strong></legend>
+    <div class="row">
       <button
         class={app.settings.direction === 'text' ? 'primary' : ''}
+        aria-pressed={app.settings.direction === 'text'}
         onclick={() => setDirection('text')}>Show text first</button>
       <button
         class={app.settings.direction === 'translation' ? 'primary' : ''}
+        aria-pressed={app.settings.direction === 'translation'}
         onclick={() => setDirection('translation')}>Show translation first</button>
     </div>
-  </div>
+  </fieldset>
 
   <div class="card col">
     <div><strong>Connection</strong></div>
@@ -68,7 +71,15 @@
 <style>
   .mode-label { font-weight: 500; }
   .mode-hint { font-size: 0.85rem; opacity: 0.8; margin-top: 0.15rem; }
-  [role='radiogroup'] button {
+  fieldset {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  fieldset legend {
+    padding: 0 0.4rem;
+    font-weight: normal;
+  }
+  fieldset button {
     text-align: left;
     padding: 0.6rem 0.85rem;
   }

@@ -1,4 +1,4 @@
-import mqtt, { type MqttClient } from 'mqtt';
+import type { MqttClient } from 'mqtt';
 import type { StoredConnection } from '../storage/credentials.ts';
 import type { ConnectionState, IncomingMessage } from './types.ts';
 import type { PublishOpts } from './queue.ts';
@@ -28,10 +28,15 @@ export class MqttWrapper {
     this.onNextAttempt = onNextAttempt ?? null;
   }
 
-  connect(conn: StoredConnection): void {
+  async connect(conn: StoredConnection): Promise<void> {
     if (this.client) return;
     this.onState('connecting');
     this.nextBackoff = MIN_BACKOFF;
+    // Lazy-load mqtt.js so the connect form ships in the initial bundle
+    // without the ~110 KB gzipped MQTT client. This module's only entry
+    // is `connect()`, so the dynamic import happens at most once and
+    // lands on the same async tick as the form submission.
+    const mqtt = (await import('mqtt')).default;
     const client = mqtt.connect(conn.url, {
       username: conn.username || undefined,
       password: conn.password || undefined,

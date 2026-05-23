@@ -7,11 +7,11 @@
   function switchGroup() { app.switchGroup(); }
 </script>
 
-<nav class="nav">
-  <button class="tab" class:active={app.view === 'review'} onclick={() => go('review')}>Review</button>
-  <button class="tab" class:active={app.view === 'edit'} onclick={() => go('edit')}>Edit</button>
-  <button class="tab" class:active={app.view === 'settings'} onclick={() => go('settings')}>Settings</button>
-  <button class="tab" onclick={switchGroup} title="Switch group">⇄</button>
+<nav class="nav" aria-label="Main">
+  <button class="tab" class:active={app.view === 'review'} aria-current={app.view === 'review' ? 'page' : undefined} onclick={() => go('review')}>Review</button>
+  <button class="tab" class:active={app.view === 'edit'} aria-current={app.view === 'edit' ? 'page' : undefined} onclick={() => go('edit')}>Edit</button>
+  <button class="tab" class:active={app.view === 'settings'} aria-current={app.view === 'settings' ? 'page' : undefined} onclick={() => go('settings')}>Settings</button>
+  <button class="tab" onclick={switchGroup} aria-label="Switch group" title="Switch group">⇄</button>
   <div class="badge-wrap"><ConnectionBadge /></div>
 </nav>
 
