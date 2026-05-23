@@ -751,12 +751,18 @@ removes the need for any top-level single-flight flag.
        `publishedAt` and put back. Do **not** delete. The next flush
        retries. On a sync throw, also stop iterating the current
        flush pass.
-- On mqtt.js's `close` (or `offline`) event, the wrapper clears
-  `publishedAt` on every IDB row (a single bulk-update transaction). Any
-  row that was in-flight when the connection dropped — PUBACK never
-  arrived — is now eligible for re-flush on the next `connect`. Without
-  this step, in-flight rows would be skipped forever by step 1's
-  filter and `pendingCount` would never decrement to zero.
+- On **every** transition into "connected" *and* "reconnecting"
+  (mqtt.js's `connect` / `close` events), the wrapper clears
+  `publishedAt` on every IDB row in a single bulk-update transaction.
+  Doing it on `close`/`offline` is the obvious case — PUBACK never
+  arrived. Doing it on `connect` too is a defence against the
+  "phantom-connected" state where mqtt.js still thinks the socket is
+  open but data isn't flowing (e.g. DevTools' "offline" toggle, which
+  blocks traffic without dropping the WebSocket). In that mode a flush
+  marks rows in-flight and PUBACK never lands; the next genuine
+  `connect` event finds those zombie markers and resets them so the
+  re-flush retries. The PUBACK callback already no-ops on a missing
+  row, so a duplicate publish from a stale tab races safely.
 - Cap: 10,000 entries. Beyond that, `publishIntent` rejects; the store
   reverts the optimistic mutation and the UI shows an error banner.
   Same path for IDB quota errors and "IDB unavailable" (Firefox private
@@ -775,13 +781,10 @@ The IDB queue is **durable across reloads**. It's only cleared by:
 - Successful PUBACK callbacks during flush (per-record deletion).
 
 On boot, the app reads the queue from IDB before mounting the UI so
-`pendingCount` is correct on first paint. Same boot-read pass also
-**clears `publishedAt` on any row whose marker is more than 30 s
-old** — sessions that were force-quit or crashed mid-flush never
-fired `close`/`offline`, so without this cleanup their stale markers
-would stall `flush()` and `drainAll()` forever. The 30 s threshold
-leaves a sibling tab's live in-flight publishes alone (see Caveats
-on multi-tab IDB sharing). Flush itself is driven by `connect`.
+`pendingCount` is correct on first paint. The clear-on-connect
+behaviour above also covers force-quits and crashes — the next
+successful `connect` resets any leftover `publishedAt` markers.
+Flush itself is driven by `connect`.
 
 | Reload scenario             | What happens                                           |
 |-----------------------------|--------------------------------------------------------|

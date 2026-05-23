@@ -88,13 +88,24 @@ export class PublishQueue {
   async onConnect(): Promise<void> {
     this.connected = true;
     await this.init();
+    // Wipe any in-flight markers from a prior session or aborted flush
+    // before re-flushing. Rationale: mqtt.js can keep claiming
+    // "connected" while devtools-offline (or a flaky network) silently
+    // drops traffic — publishes get marked in-flight here but never
+    // get PUBACK'd, and the boot-time 30 s cleanup misses them because
+    // the marker is set *after* boot. Every fresh transition into
+    // "connected" gives us a clean slate.
+    await this.clearAllPublishedAt();
     void this.flush();
   }
 
   async onClose(): Promise<void> {
     this.connected = false;
+    await this.clearAllPublishedAt();
+  }
+
+  private async clearAllPublishedAt(): Promise<void> {
     if (!this.db) return;
-    // Clear `publishedAt` on every in-flight row so the next flush retries.
     const tx = this.db.transaction(STORE, 'readwrite');
     let cursor = await tx.store.openCursor();
     while (cursor) {
