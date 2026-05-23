@@ -118,8 +118,9 @@
                 class="select"
                 onclick={() => pick(g.id)}
                 disabled={busy}
+                aria-current={app.activeGroupId === g.id ? 'true' : undefined}
               >
-                <span class="name">{g.name}</span>
+                <span class="name" class:current={app.activeGroupId === g.id}>{g.name}</span>
               </button>
               <button
                 class="edit"
@@ -197,6 +198,7 @@
   .group-row .edit { color: var(--fg-2); }
   .group-row .delete { color: var(--danger); }
   .name { font-size: 1.05rem; }
+  .name.current { font-weight: 700; }
   .rename-row {
     display: flex;
     gap: 0.5rem;
