@@ -45,6 +45,11 @@ export class MqttWrapper {
       resubscribe: false,
       reconnectPeriod: MIN_BACKOFF,
       connectTimeout: 10_000,
+      // Halve the default (60 s) so a phantom-offline state — DevTools'
+      // "offline" toggle, a stalled mobile network — is detected within
+      // ~30-45 s instead of ~60-90 s. PINGREQ is single-byte; cost is
+      // negligible.
+      keepalive: 30,
     });
     this.client = client;
 

@@ -281,9 +281,12 @@ mwords/
    false; Disconnect & forget wipes the whole entry.
 3. **Connect** to the broker via WSS using `mqtt.js`, configured with
    `resubscribe: false` (our wrapper manages subscriptions explicitly;
-   see step 9 for the reconnect path) and `reconnectPeriod: 1000` (the
+   see step 9 for the reconnect path), `reconnectPeriod: 1000` (the
    initial value the backoff strategy starts from — see "Reconnect
-   strategy" below). A small connection
+   strategy" below), and `keepalive: 30` (half the mqtt.js default of
+   60 s so a phantom-offline state — DevTools' "offline" toggle, a
+   stalled mobile network — is detected via PINGREQ timeout within
+   ~30–45 s instead of ~60–90 s). A small connection
    badge in the nav bar reflects state (`connecting` / `connected` /
    `reconnecting in Ns` / `error`). In the `reconnecting` state the badge
    shows a live countdown to the next attempt (see "Reconnect strategy"
