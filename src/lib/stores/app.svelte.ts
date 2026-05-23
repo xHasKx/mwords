@@ -325,6 +325,30 @@ class AppStore {
     await this.selectGroup(id);
   }
 
+  async renameGroup(id: string, name: string): Promise<void> {
+    if (!this.storedConn) throw new Error('not connected');
+    const existing = this.groups.get(id);
+    if (!existing) throw new Error('group missing');
+    const trimmed = name.trim();
+    if (trimmed.length < 1 || trimmed.length > 256) {
+      throw new Error('name must be 1-256 chars');
+    }
+    if (trimmed === existing.name) return;
+    const next: Group = {
+      ...existing,
+      name: trimmed,
+      updated: Date.now() / 1000,
+    };
+    this.groups.set(id, next);
+    try {
+      await queue.publishIntent(groupTopic(this.storedConn.prefix, id), next);
+    } catch (err) {
+      this.groups.set(id, existing);
+      this.publishError = (err as Error).message;
+      throw err;
+    }
+  }
+
   async selectGroup(gid: string): Promise<void> {
     if (!this.storedConn) return;
     const prefix = this.storedConn.prefix;
