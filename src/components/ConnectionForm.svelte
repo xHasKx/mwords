@@ -2,7 +2,7 @@
   import { app } from '../lib/stores/app.svelte.ts';
   import { isValidPrefix } from '../lib/mqtt/topics.ts';
 
-  let url = $state('wss://mqtt.flespi.io');
+  let url = $state('');
   let username = $state('');
   let password = $state('');
   let prefix = $state('mwords');
