@@ -8,11 +8,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "biome check",
+    "format": "biome format --write",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "license": "ISC",
   "devDependencies": {
+    "@biomejs/biome": "2.4.15",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
     "fake-indexeddb": "^6.2.5",

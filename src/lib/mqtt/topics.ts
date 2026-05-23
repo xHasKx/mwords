@@ -3,12 +3,9 @@ export const groupTopic = (prefix: string, gid: string) => `${prefix}/g/${gid}`;
 export const groupsFilter = (prefix: string) => `${prefix}/g/+`;
 export const wordTopic = (prefix: string, gid: string, id: string) =>
   `${prefix}/g/${gid}/words/${id}`;
-export const wordsFilter = (prefix: string, gid: string) =>
-  `${prefix}/g/${gid}/words/+`;
-export const srsTopic = (prefix: string, gid: string, id: string) =>
-  `${prefix}/g/${gid}/srs/${id}`;
-export const srsFilter = (prefix: string, gid: string) =>
-  `${prefix}/g/${gid}/srs/+`;
+export const wordsFilter = (prefix: string, gid: string) => `${prefix}/g/${gid}/words/+`;
+export const srsTopic = (prefix: string, gid: string, id: string) => `${prefix}/g/${gid}/srs/${id}`;
+export const srsFilter = (prefix: string, gid: string) => `${prefix}/g/${gid}/srs/+`;
 
 export type ParsedTopic =
   | { kind: 'group'; gid: string }
@@ -18,7 +15,7 @@ export type ParsedTopic =
   | { kind: 'unknown' };
 
 export function parseTopic(prefix: string, topic: string): ParsedTopic {
-  if (!topic.startsWith(prefix + '/')) return { kind: 'unknown' };
+  if (!topic.startsWith(`${prefix}/`)) return { kind: 'unknown' };
   const rest = topic.slice(prefix.length + 1);
   const parts = rest.split('/');
   if (parts.length === 1 && parts[0] === 'settings') return { kind: 'settings' };

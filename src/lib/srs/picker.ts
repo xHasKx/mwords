@@ -23,7 +23,6 @@ export function pickNext(args: PickArgs): Word | null {
       });
     case 'serial':
       return serialPick({ words: args.words, previousId: args.previousId });
-    case 'sm2':
     default:
       return sm2pick({ words: args.words, srs: args.srs, now: args.now });
   }

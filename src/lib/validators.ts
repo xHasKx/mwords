@@ -46,7 +46,11 @@ export function isSrsState(x: unknown, topicId: string): x is SrsState {
   if (!isFiniteNumber(o.reps)) return false;
   if (!isFiniteNumber(o.lapses)) return false;
   if (!isFiniteNumber(o.due)) return false;
-  if (o.lastGrade !== null && !(typeof o.lastGrade === 'string' && GRADES.has(o.lastGrade as Grade))) return false;
+  if (
+    o.lastGrade !== null &&
+    !(typeof o.lastGrade === 'string' && GRADES.has(o.lastGrade as Grade))
+  )
+    return false;
   if (!isFiniteNumber(o.reviewCount)) return false;
   if (!isFiniteNonNeg(o.updated)) return false;
   return true;

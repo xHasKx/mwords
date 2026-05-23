@@ -19,7 +19,8 @@ export function read(): StoredConnection | null {
       typeof v.username !== 'string' ||
       typeof v.password !== 'string' ||
       typeof v.prefix !== 'string'
-    ) return null;
+    )
+      return null;
     return {
       url: v.url,
       username: v.username,
@@ -45,7 +46,7 @@ export function update(patch: Partial<StoredConnection>): void {
 
 export function clearLastGroup(): void {
   const cur = read();
-  if (!cur || !cur.lastGroup) return;
+  if (!cur?.lastGroup) return;
   const { lastGroup: _, ...rest } = cur;
   void _;
   write(rest);

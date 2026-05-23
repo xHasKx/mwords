@@ -1,7 +1,16 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { MqttWrapper } from '../mqtt/client.ts';
 import type { ConnectionState } from '../mqtt/types.ts';
-import { parseTopic, groupsFilter, settingsTopic, groupTopic, wordsFilter, srsFilter, wordTopic, srsTopic } from '../mqtt/topics.ts';
+import {
+  parseTopic,
+  groupsFilter,
+  settingsTopic,
+  groupTopic,
+  wordsFilter,
+  srsFilter,
+  wordTopic,
+  srsTopic,
+} from '../mqtt/topics.ts';
 import type { Group, Settings, SrsState, Word, Grade } from '../types.ts';
 import { defaultSettings, defaultSrs } from '../types.ts';
 import { applyGrade } from '../srs/picker.ts';
@@ -92,9 +101,7 @@ class AppStore {
       (state, err) => this.handleState(state, err),
       (nextAttemptAt) => (this.nextAttemptAt = nextAttemptAt),
     );
-    queue.setPublisher((topic, data, opts, cb) =>
-      this.mqtt!.publishRaw(topic, data, opts, cb),
-    );
+    queue.setPublisher((topic, data, opts, cb) => this.mqtt!.publishRaw(topic, data, opts, cb));
     this.mqtt.connect(conn);
   }
 
@@ -406,10 +413,7 @@ class AppStore {
     const word: Word = { id, text: t, translation: tr, created: ts, updated: ts };
     this.words.set(id, word);
     try {
-      await queue.publishIntent(
-        wordTopic(this.storedConn.prefix, this.activeGroupId, id),
-        word,
-      );
+      await queue.publishIntent(wordTopic(this.storedConn.prefix, this.activeGroupId, id), word);
     } catch (err) {
       this.words.delete(id);
       this.publishError = (err as Error).message;
@@ -432,10 +436,7 @@ class AppStore {
     };
     this.words.set(id, word);
     try {
-      await queue.publishIntent(
-        wordTopic(this.storedConn.prefix, this.activeGroupId, id),
-        word,
-      );
+      await queue.publishIntent(wordTopic(this.storedConn.prefix, this.activeGroupId, id), word);
     } catch (err) {
       this.words.set(id, existing);
       this.publishError = (err as Error).message;
@@ -457,12 +458,8 @@ class AppStore {
     this.wordWatermark.set(id, seed);
     this.srsWatermark.set(id, seed);
     try {
-      await queue.publishTombstone(
-        wordTopic(this.storedConn.prefix, this.activeGroupId, id),
-      );
-      await queue.publishTombstone(
-        srsTopic(this.storedConn.prefix, this.activeGroupId, id),
-      );
+      await queue.publishTombstone(wordTopic(this.storedConn.prefix, this.activeGroupId, id));
+      await queue.publishTombstone(srsTopic(this.storedConn.prefix, this.activeGroupId, id));
     } catch (err) {
       if (prevWord) this.words.set(id, prevWord);
       if (prevSrs) this.srs.set(id, prevSrs);

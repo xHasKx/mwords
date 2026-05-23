@@ -119,12 +119,7 @@ export class MqttWrapper {
     });
   }
 
-  publishRaw(
-    topic: string,
-    data: string,
-    opts: PublishOpts,
-    cb: (err?: Error) => void,
-  ): void {
+  publishRaw(topic: string, data: string, opts: PublishOpts, cb: (err?: Error) => void): void {
     if (!this.client) {
       cb(new Error('not connected'));
       return;

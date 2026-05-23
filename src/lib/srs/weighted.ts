@@ -22,9 +22,7 @@ export function pick(args: {
 }): Word | null {
   if (args.words.length === 0) return null;
   const rng = args.rng ?? Math.random;
-  const weights = args.words.map((w) =>
-    weight(args.srs.get(w.id) ?? defaultSrs(w.id)),
-  );
+  const weights = args.words.map((w) => weight(args.srs.get(w.id) ?? defaultSrs(w.id)));
   const total = weights.reduce((a, b) => a + b, 0);
   if (total <= 0) return args.words[0];
 

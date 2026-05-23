@@ -127,10 +127,7 @@ export class PublishQueue {
     return this.enqueue(topic, null);
   }
 
-  private async enqueue(
-    topic: string,
-    payload: Record<string, unknown> | null,
-  ): Promise<void> {
+  private async enqueue(topic: string, payload: Record<string, unknown> | null): Promise<void> {
     await this.init();
     const db = this.db!;
     const tx = db.transaction(STORE, 'readwrite');
@@ -249,12 +246,10 @@ export class PublishQueue {
       await tx.store.put(current);
       await tx.done;
 
-      const data =
-        current.payload === null ? '' : JSON.stringify(current.payload);
+      const data = current.payload === null ? '' : JSON.stringify(current.payload);
       const tsSec =
-        current.payload !== null &&
-        typeof current.payload['updated'] === 'number'
-          ? (current.payload['updated'] as number)
+        current.payload !== null && typeof current.payload.updated === 'number'
+          ? (current.payload.updated as number)
           : Date.now() / 1000;
       const seq = current.seq!;
       const publisher = this.publisher;
@@ -269,7 +264,7 @@ export class PublishQueue {
           },
           (err) => void this.handlePubackResult(seq, err),
         );
-      } catch (err) {
+      } catch (_err) {
         // Synchronous throw from mqtt.publish — clear publishedAt and stop
         // iterating this pass.
         await this.markForRetry(seq);
