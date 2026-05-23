@@ -2,6 +2,8 @@
 
 **Disclaimer**: most of the code written by Claude Code.
 
+<https://xhaskx.github.io/mwords/>
+
 A simple browser-based, Anki-like flashcard app for language learning, with
 spaced-repetition review and an editable word list. Words are organised
 into named **groups** (decks); the user picks or creates one on first
