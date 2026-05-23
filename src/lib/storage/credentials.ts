@@ -4,6 +4,7 @@ export type StoredConnection = {
   password: string;
   prefix: string;
   lastGroup?: string;
+  autoconnect?: boolean;
 };
 
 const KEY = 'mwords:connection';
@@ -25,6 +26,7 @@ export function read(): StoredConnection | null {
       password: v.password,
       prefix: v.prefix,
       ...(typeof v.lastGroup === 'string' ? { lastGroup: v.lastGroup } : {}),
+      ...(typeof v.autoconnect === 'boolean' ? { autoconnect: v.autoconnect } : {}),
     };
   } catch {
     return null;

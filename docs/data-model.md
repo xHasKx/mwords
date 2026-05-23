@@ -300,9 +300,9 @@ type Settings = {
 
 Exactly **one** key:
 
-| Key                | Value (JSON-encoded)                                          |
-|--------------------|---------------------------------------------------------------|
-| `mwords:connection`| `{ url, username, password, prefix, lastGroup? }`             |
+| Key                | Value (JSON-encoded)                                                          |
+|--------------------|-------------------------------------------------------------------------------|
+| `mwords:connection`| `{ url, username, password, prefix, lastGroup?, autoconnect? }`               |
 
 ```ts
 type StoredConnection = {
@@ -314,6 +314,11 @@ type StoredConnection = {
                            // no `/`, `+`, `#`, null byte, or whitespace.
   lastGroup?: string;      // optional: id of the most-recently active group
                            // (a numeric string like "1716285234567")
+  autoconnect?: boolean;   // when true, boot skips the connect form and
+                           // calls connect() immediately. Set by the form's
+                           // Autoconnect checkbox; cleared by Settings →
+                           // Disconnect (and naturally lost on Disconnect &
+                           // forget). Treated as false when missing.
 };
 ```
 
@@ -324,6 +329,11 @@ type StoredConnection = {
   not (e.g., the group was deleted on another device, or this is a fresh
   install), we show the picker. There's also a manual "switch group"
   affordance so the user is never trapped in one group.
+- `autoconnect` defaults to false. Each Save & connect submission writes
+  whatever the checkbox shows; each Settings → Disconnect resets it to
+  false. The intent is "this connection is durable enough that I want it
+  re-established on the next page load"; clicking Disconnect is the user
+  expressing they want to edit details next time, so the flag clears.
 
 We deliberately keep no card or SRS cache in `localStorage` — the MQTT
 retained snapshot is authoritative on every load. IndexedDB holds only the

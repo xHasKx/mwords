@@ -45,6 +45,12 @@ class AppStore {
     this.storedConn = creds.read();
     this.view = 'connect';
     void queue.init();
+    if (this.storedConn?.autoconnect) {
+      // Opted-in skip the form on boot. The form may briefly flash
+      // visible before view transitions on `connected` — acceptable
+      // for an explicit opt-in.
+      this.connect(this.storedConn);
+    }
   }
 
   connect(conn: StoredConnection): void {
@@ -93,6 +99,12 @@ class AppStore {
     this.connection = 'idle';
     this.connectionError = null;
     this.nextAttemptAt = null;
+    // Clear the autoconnect opt-in — the user has expressed they want
+    // to see the form on next boot.
+    if (this.storedConn?.autoconnect) {
+      this.storedConn = { ...this.storedConn, autoconnect: false };
+      creds.update({ autoconnect: false });
+    }
     this.view = 'connect';
   }
 

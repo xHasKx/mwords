@@ -268,13 +268,17 @@ mwords/
 ## Application lifecycle
 
 1. **Boot.** `main.ts` mounts `<App />`.
-2. **Read credentials** from `localStorage` (`mwords:connection`). Always
-   render `ConnectionForm` on boot, pre-filling fields from the stored
-   blob when present. **No auto-connect** — the user clicks "Save &
-   connect" to proceed. Rationale: reloading the page is the natural
-   place to switch brokers or fix a bad URL, and an auto-connect would
-   either flash the app for a moment before failing, or fire off
-   credentials the user wanted to edit.
+2. **Read credentials** from `localStorage` (`mwords:connection`). Render
+   `ConnectionForm` on boot, pre-filling fields from the stored blob
+   when present. The default behaviour is **no auto-connect** — the user
+   clicks "Save & connect" to proceed, so reloading the page is a chance
+   to switch brokers or fix a bad URL without firing credentials the
+   user wanted to edit. The form has an **Autoconnect** checkbox that
+   opts into the slice-1 behaviour: if the stored blob has
+   `autoconnect: true`, boot skips the form and calls `connect()`
+   directly (the form may flash visible for the connecting tick before
+   the view transitions). Settings → Disconnect resets the flag to
+   false; Disconnect & forget wipes the whole entry.
 3. **Connect** to the broker via WSS using `mqtt.js`, configured with
    `resubscribe: false` (our wrapper manages subscriptions explicitly;
    see step 9 for the reconnect path) and `reconnectPeriod: 1000` (the
@@ -449,6 +453,10 @@ stored credentials exist, every field is pre-filled from
   (`StoredConnection.prefix`). This namespaces the app on a shared broker.
   The group is **not** entered here — it's chosen at runtime in the next
   step.
+- **Autoconnect** checkbox. Pre-filled from the stored
+  `autoconnect` flag (defaults to off when absent). Every Save & connect
+  submission writes the current checkbox value, so toggling it just
+  takes effect on the next reload.
 - "Save & connect" persists to `localStorage` and triggers step 3 above.
 - **"Clear pending queue"** — calls `queue.clear()` to drop every intent
   currently in IDB without touching `localStorage` (credentials, prefix,
@@ -467,10 +475,12 @@ user can drop the broker connection mid-session without losing their
 place:
 
 - **"Disconnect"** — tears down the MQTT client and returns to the
-  connection form with all stored values intact. Nothing is removed
-  from `localStorage`; the user is expected to either edit a field and
-  reconnect, or just resubmit. The pending queue is left alone (it
-  drains on the next connect).
+  connection form. Credentials, prefix, and `lastGroup` survive in
+  `localStorage`; the **`autoconnect` flag is cleared** so the next
+  page reload waits for the user to confirm. The user is expected to
+  either edit a field and reconnect, or just resubmit (re-ticking
+  Autoconnect if desired). The pending queue is left alone (it drains
+  on the next connect).
 - **"Disconnect & forget"** — also removes the `mwords:connection` key
   from `localStorage` (credentials, prefix, and `lastGroup` go with
   it) and clears the queue. Strict superset of "Disconnect" + "Clear

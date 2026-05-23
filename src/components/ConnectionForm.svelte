@@ -6,6 +6,7 @@
   let username = $state('');
   let password = $state('');
   let prefix = $state('mwords');
+  let autoconnect = $state(false);
   let error = $state<string | null>(null);
 
   const stored = app.storedConnection();
@@ -14,6 +15,7 @@
     username = stored.username;
     password = stored.password;
     prefix = stored.prefix;
+    autoconnect = stored.autoconnect === true;
   }
 
   function submit(e: Event) {
@@ -27,6 +29,7 @@
       username: username.trim(),
       password,
       prefix: prefix.trim(),
+      autoconnect,
     });
   }
 </script>
@@ -49,6 +52,24 @@
     <label for="pfx">Prefix</label>
     <input id="pfx" bind:value={prefix} />
   </div>
+  <label class="check">
+    <input id="autoconnect" type="checkbox" bind:checked={autoconnect} />
+    <span>Autoconnect on page load</span>
+  </label>
   {#if error}<div class="error">{error}</div>{/if}
   <button type="submit" class="primary">Save &amp; connect</button>
 </form>
+
+<style>
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    cursor: pointer;
+  }
+  .check input[type='checkbox'] {
+    width: auto;
+    margin: 0;
+  }
+</style>
