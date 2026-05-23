@@ -37,15 +37,30 @@ new-card limits in v1.
 ease           — float, default 2.5, clamped to >= 1.3
 intervalDays   — integer days until next review, default 0
 reps           — successful reps in a row, default 0; resets to 0 on Again
-due            — epoch ms of next review
+due            — epoch seconds of next review
 ```
 
 ### Transition
 
-Given the current `state`, a `grade`, and a "now" timestamp:
+Given the current `state`, a `grade`, and a `now` timestamp (epoch seconds),
+the transition produces a **new** `SrsState`. `id` is preserved from
+`state`; the pseudocode below writes the rest. (`lapses` is copied
+except on the Again branch, where it's incremented.)
 
 ```
 q = QUALITY[grade]
+
+// Start from the previous state so subsequent expressions have values
+// to read; the new SrsState is built up from these locals.
+id           = state.id                  // unchanged; same as the topic suffix
+ease         = state.ease
+reps         = state.reps
+intervalDays = state.intervalDays
+lapses       = state.lapses
+
+// Update ease first — the new ease feeds the interval formula below
+// (textbook SM-2 order).
+ease = max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
 
 if q < 3:               // Again
   reps = 0
@@ -57,19 +72,28 @@ else:
   elif reps == 1:
     intervalDays = 6
   else:
-    intervalDays = round(state.intervalDays * ease)
+    intervalDays = round(intervalDays * ease)   // integer days; uses new ease
   reps += 1
 
-ease = max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
-due  = now + intervalDays days
+due         = now + intervalDays * 86_400       // seconds in a day
+lastGrade   = grade
+reviewCount = state.reviewCount + 1
+updated     = now                                // last-review time + LWW timestamp
 ```
 
-Notes:
+Notes on the ease formula (which applies regardless of grade branch):
 
-- `Hard` (`q=3`) shrinks `ease` a little but still advances the interval.
-- `Easy` (`q=5`) grows `ease`; the next interval is longer.
+- `Again` (`q=0`) drops `ease` by 0.8 (clamped to 1.3 floor). Repeated
+  Agains will hit the floor quickly.
+- `Hard` (`q=3`) drops `ease` by 0.14.
+- `Good` (`q=4`) leaves `ease` **unchanged** (formula yields delta 0).
+- `Easy` (`q=5`) grows `ease` by 0.10.
 - `intervalDays = 0` after Again means "show again this session" — the
   review picker filters by `due <= now`, so it will reappear.
+- `lapses += 1` runs on **every** Again, including the first Again of a
+  brand-new card. Textbook SM-2 only counts post-graduation Agains as
+  lapses; we don't track graduation explicitly, so we treat every Again
+  the same. `lapses` is a stat only — not used in scheduling.
 
 ### Picking the next card (SM-2 mode)
 
@@ -112,21 +136,6 @@ weight(srsState):
     case 'easy':  return 0.3
 ```
 
-### Transition
-
-Weighted random doesn't need due dates, but we still record the grade so
-SM-2 history accumulates if the user switches modes later. Each review:
-
-```
-srsState.lastGrade      = grade
-srsState.lastReviewedAt = now
-srsState.reviewCount   += 1
-```
-
-We **also** apply the SM-2 ease/interval update in weighted mode. That way
-the SM-2 state stays "live" and the user can switch back without a cold
-start. (This is cheap and harmless — the weighted picker ignores those fields.)
-
 ### Picking the next card (weighted-random mode)
 
 1. Build a weights array over all words: `w_i = weight(srsState_i)`.
@@ -155,32 +164,12 @@ the picker:
 const compareWords = (a: Word, b: Word) => Number(a.id) - Number(b.id);
 ```
 
-No separate sort-key field on `Word`, no auxiliary order topic — the id is
-already the order.
-
 ### Position tracking
 
-Serial mode needs a "where am I in the list" cursor. v1 keeps this in
-**memory only** (a property on the serial module's reactive store). Trade-off:
-
-- ✅ No extra MQTT topic, no extra schema field, no cross-device race.
-- ❌ Refreshing the page or switching devices restarts from the beginning.
-
-A later iteration can persist the cursor — either as a field on `Settings`
-(`lastSerialId: string | null`) or in a separate ephemeral topic. The
-algorithm itself doesn't change; only where the cursor is stored.
-
-### Transition
-
-Same as weighted random — apply the SM-2 update so history accumulates,
-but the picker ignores schedule fields:
-
-```
-srsState.lastGrade      = grade
-srsState.lastReviewedAt = now
-srsState.reviewCount   += 1
-// plus SM-2 ease/interval/due update, for history continuity
-```
+The "where am I in the list" cursor is tracked by the caller and passed
+into `pickNext` via `PickArgs.previousId`. `serial.ts` itself stays pure
+— no internal state. The caller holds the cursor in memory only, so
+refreshing the page or switching devices restarts from the beginning.
 
 ### Picking the next card (serial mode)
 
@@ -199,7 +188,7 @@ type PickArgs = {
   words: Word[];
   srs: Map<string, SrsState>;
   settings: Settings;
-  now: Date;
+  now: number;             // epoch seconds
   previousId?: string;
 };
 
@@ -212,9 +201,11 @@ export function pickNext(args: PickArgs): Word | null {
   }
 }
 
-export function applyGrade(state: SrsState, grade: Grade, now: Date): SrsState {
-  // Always apply SM-2 transition — all three modes write the same fields,
-  // weighted and serial just ignore the schedule fields when picking.
+export function applyGrade(state: SrsState, grade: Grade, now: number): SrsState {
+  // Always apply SM-2 transition — all three modes write the same fields.
+  // Weighted reads `lastGrade` for its weight function; serial ignores
+  // every SrsState field when picking. Neither uses the schedule fields
+  // (ease / intervalDays / reps / lapses / due).
   return sm2.transition(state, grade, now);
 }
 ```
@@ -229,7 +220,8 @@ the dispatcher does the rest.
 - A new card graded `good` → `interval=1, reps=1`.
 - The same card graded `good` again → `interval=6, reps=2`.
 - A third `good` → `interval = round(6 * ease)`.
-- `again` resets reps and lapses += 1, leaves ease above 1.3.
+- `again` resets reps and lapses += 1; ease ends ≥ 1.3 (it drops by 0.8
+  and is clamped at the 1.3 floor).
 - `hard` shrinks ease, `easy` grows it; ease is clamped at 1.3.
 - `due` advances by exactly `intervalDays` from `now`.
 
@@ -249,16 +241,5 @@ the dispatcher does the rest.
 - Order is stable across calls with the same input.
 
 Both modules are pure functions — no mocks, no MQTT, no DOM. Time is always
-injected (`now: Date`), randomness is injected for the weighted picker
-(`rng: () => number`, defaulting to `Math.random`).
-
-## Possible future tweaks
-
-- **Learning steps** (Anki-style 1m/10m before graduating to days).
-- **Leech detection** — auto-tag cards with too many lapses.
-- **FSRS** as a fourth mode (see "Why not FSRS" above).
-- **Daily new-card limit** to prevent dumping 200 new cards into one session.
-- **Persist the serial cursor** across reloads / devices.
-
-None of these require schema changes beyond adding new fields to `SrsState`
-and one new value to `SrsMode`.
+injected (`now: number`, epoch seconds), randomness is injected for the weighted
+picker (`rng: () => number`, defaulting to `Math.random`).
