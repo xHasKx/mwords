@@ -12,7 +12,7 @@
 
   function disconnectAndForget() {
     if (!confirm('Disconnect and forget stored credentials?')) return;
-    app.disconnectAndForget();
+    void app.disconnectAndForget();
   }
 </script>
 

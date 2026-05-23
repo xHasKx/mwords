@@ -1,6 +1,7 @@
 import mqtt, { type MqttClient } from 'mqtt';
 import type { StoredConnection } from '../storage/credentials.ts';
 import type { ConnectionState, IncomingMessage } from './types.ts';
+import type { PublishOpts } from './queue.ts';
 
 export type MessageHandler = (msg: IncomingMessage) => void;
 export type StateHandler = (state: ConnectionState, err?: Error) => void;
@@ -32,7 +33,7 @@ export class MqttWrapper {
 
     client.on('connect', () => {
       this.onState('connected');
-      // First slice: re-issue any active subscriptions on reconnect.
+      // Slice 1/2: re-issue any active subscriptions on reconnect.
       for (const filter of this.currentSubscriptions) {
         client.subscribe(filter, { qos: 1 });
       }
@@ -63,14 +64,6 @@ export class MqttWrapper {
     this.onState('idle');
   }
 
-  subscribe(filter: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.client) return reject(new Error('not connected'));
-      this.currentSubscriptions.add(filter);
-      this.client.subscribe(filter, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
-    });
-  }
-
   subscribeMany(filters: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.client) return reject(new Error('not connected'));
@@ -87,43 +80,29 @@ export class MqttWrapper {
     });
   }
 
-  // First slice: direct publish, no IDB queue. Same signature the queued
-  // implementation will swap in for slice 2.
-  publishIntent(topic: string, payload: Record<string, unknown>): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.client) return reject(new Error('not connected'));
-      const json = JSON.stringify(payload);
-      const updated = typeof (payload as { updated?: unknown }).updated === 'number'
-        ? String((payload as { updated: number }).updated)
-        : String(Date.now() / 1000);
-      this.client.publish(
-        topic,
-        json,
-        {
-          qos: 1,
-          retain: true,
-          properties: { userProperties: { timestamp: updated } },
-        },
-        (err) => (err ? reject(err) : resolve()),
-      );
-    });
-  }
-
-  publishTombstone(topic: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.client) return reject(new Error('not connected'));
-      const ts = String(Date.now() / 1000);
-      this.client.publish(
-        topic,
-        '',
-        {
-          qos: 1,
-          retain: true,
-          properties: { userProperties: { timestamp: ts } },
-        },
-        (err) => (err ? reject(err) : resolve()),
-      );
-    });
+  // Raw publish used by PublishQueue.flush(). The queue is responsible for
+  // serializing payloads and selecting the timestamp User Property; this
+  // method just hands the byte string to mqtt.js and surfaces the PUBACK.
+  publishRaw(
+    topic: string,
+    data: string,
+    opts: PublishOpts,
+    cb: (err?: Error) => void,
+  ): void {
+    if (!this.client) {
+      cb(new Error('not connected'));
+      return;
+    }
+    this.client.publish(
+      topic,
+      data,
+      {
+        qos: opts.qos,
+        retain: opts.retain,
+        properties: { userProperties: opts.userProperties },
+      },
+      (err) => cb(err ?? undefined),
+    );
   }
 
   isConnected(): boolean {

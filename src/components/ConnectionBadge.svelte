@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/stores/app.svelte.ts';
+  import { queueStore } from '../lib/stores/queue.svelte.ts';
 
   const labels: Record<string, string> = {
     idle: 'Disconnected',
@@ -21,6 +22,9 @@
 <div class="badge" title={app.connectionError ?? labels[app.connection]}>
   <span class="dot" style:background={colors[app.connection]}></span>
   <span class="text">{labels[app.connection]}</span>
+  {#if queueStore.pendingCount > 0}
+    <span class="pending">· {queueStore.pendingCount} pending</span>
+  {/if}
 </div>
 
 <style>
@@ -36,5 +40,9 @@
     height: 10px;
     border-radius: 50%;
     display: inline-block;
+  }
+  .pending {
+    color: var(--fg-3);
+    font-size: 0.8rem;
   }
 </style>
