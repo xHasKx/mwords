@@ -31,6 +31,41 @@ broker connection info.
   spare moments). Desktop is supported via the same touch-driven layout — no
   keyboard shortcuts, no separate desktop interaction model.
 
+## Build order (first slice → hardening)
+
+This document specifies the v1 end state. To avoid reading it as one
+big-bang, here's a suggested build order. Each slice runs end-to-end
+before the next is started.
+
+1. **First slice — happy path online, single tab.** Connect form,
+   credentials in `localStorage`, mqtt.js + WSS, phase-1 + phase-2
+   subscribes (no debounce, no LWW gate). Group picker (no rename, no
+   offline create). Review + Edit views. `publishIntent` calls
+   `mqtt.publish` directly (no IDB queue, no dedupe). SM-2 picker
+   only. Renders a working app against `wss://test.mosquitto.org:8081`
+   or similar.
+2. **PublishQueue with IDB.** Add `lib/mqtt/queue.ts` (dedupe by
+   topic, fire `mqtt.publish` from `flush()`). Optimistic store
+   updates that revert on `publishIntent` rejection. `pendingCount`
+   badge. No reconnect backoff yet — let mqtt.js default-retry.
+3. **Reconnect + LWW gate.** Exponential backoff w/ jitter and 30 s
+   cap. Timestamp UP on publish; LWW comparison on incoming.
+   `drainAll()`-before-SUBSCRIBE on `connect`. SUBACK + 500 ms
+   debounce. Group-switch sequence (step 10) with spinner overlay
+   and UNSUBACK wait. Weighted + Serial pickers; Settings UI.
+4. **Edge-case hardening.** Tombstone watermark. Boot-time stale
+   `publishedAt` clear (30 s threshold). PUBACK idempotency for
+   multi-tab. Validator (zero-byte short-circuit, type guards, range
+   checks). Offline group creation. Connection form's "Clear pending
+   queue" + "Disconnect/forget."
+5. **Polish.** GitHub Pages deploy via `release` branch. Performance
+   budget audit. Accessibility pass. Tests (`sm2`, `weighted`,
+   `serial`, `topics`, `queue`).
+
+Slices 1–2 give a usable single-device app. Slice 3 makes it
+multi-device-safe. Slice 4 closes the rare races. Don't try to land
+4 before 1–3 are running.
+
 ## Stack
 
 | Concern              | Choice                           | Why                                                                 |
@@ -40,7 +75,7 @@ broker connection info.
 | Build / dev server   | **Vite**                         | First-class TS + Svelte support, instant HMR, easy GH Pages output. |
 | MQTT client          | **mqtt.js** (`mqtt` on npm)      | De-facto standard, supports WSS in the browser, auto-reconnect.     |
 | Offline queue store  | **idb** (`idb` on npm)           | ~2 KB Promise wrapper over IndexedDB; cursors for in-order flush.   |
-| Routing              | Hash-based, hand-rolled          | Only 3 views (Review / Edit / Settings). No router lib needed.      |
+| Routing              | Hash-based, hand-rolled          | Handful of views (GroupPicker / Review / Edit / Settings). No router lib needed. |
 | Styling              | Plain CSS, Svelte scoped styles  | Avoids a CSS-in-JS dependency; scoped-by-default is enough.         |
 | Test runner          | Vitest                           | Native Vite integration; runs the pure SRS module in node.          |
 | Lint + format        | Biome                            | One tool for both, fast, zero-config-ish.                           |
@@ -112,7 +147,7 @@ We also rely on **retained messages** as the durable storage layer.
                            ▼
 ┌────────────────────────────────────────────────────────────────┐
 │                       Reactive stores                          │
-│  $state-backed: connection, words, srsState, settings          │
+│  $state-backed: connection, groups, words, srsState, settings  │
 └──────────┬────────────────────────────────────┬────────────────┘
            │ publishIntent(topic, payload)      │ subscribes
            ▼                                    │
@@ -182,9 +217,10 @@ mwords/
 │   │   │   ├── groups.svelte.ts      # discovered groups + active group
 │   │   │   ├── words.svelte.ts       # Map<id, Word>, CRUD via MQTT
 │   │   │   ├── srs.svelte.ts         # Map<id, SrsState>
-│   │   │   └── settings.svelte.ts    # Settings record (global)
+│   │   │   ├── settings.svelte.ts    # Settings record (global)
+│   │   │   └── queue.svelte.ts       # $state mirror of queue.pendingCount
 │   │   │
-│   │   └── types.ts                # shared domain types (Word, Settings)
+│   │   └── types.ts                # shared domain types (Group, Word, Settings)
 │   │
 │   ├── components/
 │   │   ├── ReviewCard.svelte
@@ -235,8 +271,10 @@ mwords/
 2. **Read credentials** from `localStorage` (`mwords:connection`). If missing
    or invalid → render `ConnectionForm`.
 3. **Connect** to the broker via WSS using `mqtt.js`, configured with
-   `resubscribe: false` so our wrapper manages subscriptions
-   explicitly (see step 9 for the reconnect path). A small connection
+   `resubscribe: false` (our wrapper manages subscriptions explicitly;
+   see step 9 for the reconnect path) and `reconnectPeriod: 1000` (the
+   initial value the backoff strategy starts from — see "Reconnect
+   strategy" below). A small connection
    badge in the nav bar reflects state (`connecting` / `connected` /
    `reconnecting in Ns` / `error`). In the `reconnecting` state the badge
    shows a live countdown to the next attempt (see "Reconnect strategy"
@@ -251,32 +289,31 @@ mwords/
    it resolves once every currently-queued intent has been published and
    PUBACK'd (the queue removes each row from IDB inside the PUBACK
    callback). Only then does the wrapper move on to step 4 (or, on
-   reconnect, step 9's re-subscribe). This guarantees retained replay
-   always reflects our latest pending edits, so the LWW gate never has
-   to defend against our own pre-flush state.
+   reconnect, step 9's re-subscribe). This guarantees the broker holds
+   our latest values by the time retained replay starts, so retained
+   messages we receive on our own subscriptions match what we just
+   published. The LWW gate (step 9) is still applied for incoming
+   messages, but its real job is to defend against *other devices'*
+   publishes that may arrive with stale `timestamp`s during steady-state
+   operation — not against our own pre-flush state.
 4. **Discover groups and load global settings.** In a single SUBSCRIBE,
    register `<P>/g/+` (single-level wildcard under the groups namespace)
    and `<P>/settings`. Retained `Group` payloads stream into the groups
    store keyed by id (the topic suffix `<G>`); the retained `Settings`
    payload streams into the settings store (or defaults are used if absent).
+   Wait for **SUBACK + the 500 ms debounce** (same rule as step 6) before
+   moving on, so the group picker in step 5 sees a complete groups list.
    Both subscriptions stay active for the lifetime of the connection so
    changes from other devices — new groups, renames, settings changes —
    propagate live.
-5. **Select a group.**
-   - If `lastGroup` (an id like `"1716285234567"`) is set in `localStorage`
-     and resolves to a discovered group → **auto-select it** and skip the
-     picker. This is the warm path.
-   - Otherwise → render `GroupPickerView`. If `lastGroup` was set but
-     didn't resolve (e.g. the group was deleted from another client), it
-     is cleared from `localStorage` at this point so we don't keep
-     looking for it on every load. The user picks an existing group or
-     types a name and creates a new one. Creation allocates a fresh id
-     (`Date.now().toString()`), publishes the `Group` marker via the
-     PublishQueue, and auto-switches to the new group. For an empty
-     broker with no groups yet, the picker opens in "create" mode by
-     default.
-   - A "switch group" affordance from the nav bar returns the user to the
-     picker at any time.
+5. **Select a group.** If `lastGroup` is set in `localStorage` and
+   resolves to a discovered group, auto-select it. Otherwise render
+   `GroupPickerView` (and if `lastGroup` didn't resolve, drop it from
+   the `mwords:connection` blob). The user picks an existing group or
+   creates a new one; either way the app runs the **group-switch
+   sequence** (step 10). For an empty broker, the picker opens in
+   "create" mode by default. A "switch group" affordance from the nav
+   bar returns to the picker at any time.
 6. **Subscribe to the active group.** Subscribe to:
    `<P>/g/<G>/words/+` and `<P>/g/<G>/srs/+`. Retained messages flood in
    and populate the words / srs stores, gated by the timestamp-LWW check
@@ -317,76 +354,81 @@ mwords/
       banner. On resolve, the change is durable across reloads.
    3. **Non-commit actions** (e.g. recording an SRS grade in Review mode)
       don't await — they're cheap, frequent, and one occasional dropped
-      grade isn't worth gating the next card on. Errors there are logged
-      and counted but never block the UI.
+      grade isn't worth gating the next card on. Fire-and-forget call
+      sites still attach a `.catch(err => log(err))` so a rare IDB
+      failure surfaces in logs rather than becoming an unhandled
+      promise rejection. Errors are counted but never block the UI.
 
    The actual broker round-trip is *not* part of this path. PUBACK
    happens later and only affects when the queue removes the record
    from IDB; the UI doesn't care.
-9. **On reconnect**, the wrapper repeats the connect-time sequence: first
-   `await queue.drainAll()` (see step 3), then re-issue the active
-   subscriptions (the phase-1 discovery + settings filters plus the
-   phase-2 group-scoped filters for the currently-active group).
-   `mqtt.js` does **not** auto-resubscribe (`resubscribe: false` in step
-   3) — the wrapper is the single source of subscription state.
-   Retained snapshots then re-flood the stores. Each incoming message
-   is gated by a **timestamp-LWW check** against our local state:
+9. **On reconnect**, the wrapper repeats step 3's sequence: `await
+   queue.drainAll()`, then re-issue the active subscriptions
+   (`resubscribe: false`, so the wrapper is the source of subscription
+   state). Retained snapshots re-flood the stores. **Each incoming
+   message — on reconnect *or* during steady state — passes through
+   the LWW gate below.**
 
-   - Every payload (`Group`, `Word`, `Settings`, `SrsState`) carries an
-     `updated` field in epoch seconds — that field **is** the LWW
-     timestamp. Topics are transient strings parsed by
-     `lib/mqtt/topics.ts` to decide which store + which id an incoming
-     message targets; once dispatched, the store's existing record (if
-     any) supplies the local `updated`.
-   - On incoming, read the `timestamp` MQTT 5 User Property and parse it
-     as a `Number` — already in seconds. Compare directly against the
-     local record's `updated` (also epoch seconds). For content publishes
-     these two values are the *same* quantity (the sender's
-     `payload.updated` was the source of the UP); for tombstones the UP
-     is the sender's publish-time, still comparable to our local
-     `updated`. One comparison, same unit.
-   - If the parsed value is **less than** the local record's `updated`
-     → **discard the incoming message**. Our local state is newer (and
-     a matching intent is sitting in the queue waiting to flush).
-   - Otherwise → accept it; the store entry is overwritten by the new
-     payload (whose `updated` becomes the new local timestamp by virtue
-     of being part of the record).
-   - If the incoming has no `timestamp` UP, or we have no local record
-     for this id yet, accept unconditionally.
+   The LWW timestamp is `payload.updated` (epoch seconds), mirrored
+   into the MQTT 5 `timestamp` User Property of every publish. The
+   gate compares the incoming UP against the local record's
+   `updated`:
 
-   The PublishQueue then drains any pending intents, which become the
-   broker's new retained values. After the next round-trip everyone
-   converges on our newer state. This is the mechanism by which **edits
-   made while disconnected win over the broker's stale retained values**
-   on reconnect — without it, the retained replay would briefly overwrite
-   the user's pending edits before the queue caught up.
+   - **No usable UP** (property absent, empty string, or
+     `Number(value)` not finite & positive — note `Number('') === 0`,
+     not `NaN`, so test the raw string for emptiness first): accept
+     unconditionally.
+   - **UP < local `updated`**: discard. Our local state is newer.
+   - **UP ≥ local `updated`**:
+     - Content publish → overwrite the store entry with the new
+       payload (its `updated` becomes the new local timestamp);
+       drop any tombstone-watermark entry for this id.
+     - Tombstone (zero-byte short-circuit) → delete the local record
+       and set `watermark[id] = UP`.
+   - **No local record for this id**: consult the tombstone watermark
+     (see below). If `watermark[id]` exists and UP ≤ it, discard;
+     otherwise accept as above.
 
-   The same comparison is applied to all incoming messages, not just the
-   reconnect-replay batch — incoming publishes from other devices during
-   normal operation go through the same gate.
-10. **Switching groups** is a **blocking** transition (unlike the initial
-    boot in step 6, where the user is free to interact while retained
-    messages stream in). The sequence:
-    1. Enter a `switching` state. The UI overlays a full-screen
-       "Switching to *{groupName}*…" spinner and ignores input on the
-       Review / Edit views.
-    2. Unsubscribe the two group-scoped filters for the previous group.
-       Clear the words / srs stores.
-    3. Subscribe the two group-scoped filters for the new group:
-       `<P>/g/<G>/words/+` and `<P>/g/<G>/srs/+`.
-    4. Wait for **SUBACK + the 500 ms debounce** (same rule as step 6).
-       Retained `Word` and `SrsState` messages stream into the stores
-       during this window.
-    5. Update the `lastGroup` field inside the `mwords:connection`
-       blob in `localStorage` and leave the `switching` state. The
-       overlay disappears; the user lands on the default view (Review
-       or Edit).
+   After the gate finishes, the PublishQueue drains any pending
+   intents — edits made while disconnected then beat the broker's
+   stale retained values on the next round-trip.
 
-    The discovery subscription and global settings subscription are
-    untouched — settings persist across group switches. Blocking the UI
-    during the switch eliminates any race between the new group's
-    retained replay and user input that would otherwise have to be
-    defended against in the stores.
+   **Tombstone watermark.** A per-store `Map<id, number>` held in
+   memory only. Populated whenever a tombstone is accepted (and
+   seeded synchronously by optimistic local deletes, so the resurrect
+   defense is armed before the broker echoes our publish back). It
+   exists solely to stop a stale content publish from a peer's
+   queued-while-offline backlog from resurrecting a tombstoned id
+   within the same session. It is **not** persisted: a stale publish
+   arriving after a fresh page load can still resurrect the record,
+   which we accept under the LWW trade-off documented in "No
+   history; LWW conflict resolution."
+10. **Group-switch sequence.** A blocking transition (unlike initial
+    boot in step 6, where retained replay can stream in while the user
+    interacts). Applies to both "pick existing" and "create new" from
+    the picker, and to mid-session switches via the nav bar. For new
+    groups, publish the `Group` marker first; the rest is identical.
+    1. If a previous group is active, overlay a full-screen
+       "Switching to *{groupName}*…" spinner on the current view
+       (Review / Edit / Picker) and ignore input on it. Skipped at
+       first boot — there's no prior view to block.
+    2. If a previous group is active, unsubscribe its
+       `<P>/g/<G>/words/+` and `<P>/g/<G>/srs/+` filters, **await
+       UNSUBACK** (so the broker stops delivering matching messages
+       before we touch the stores), then clear the words / srs stores.
+    3. Subscribe the new group's two filters. Wait for SUBACK + the
+       500 ms debounce (same rule as step 6).
+    4. Update `lastGroup` in `localStorage`. Dismiss the spinner.
+       Render the default view.
+
+    The discovery + global-settings subscriptions are untouched.
+
+    **Offline variant.** When `create new` is submitted while
+    disconnected, steps 2–3 are deferred: queue the `Group` marker,
+    insert the new group into the in-memory groups store with empty
+    words / srs maps, persist `lastGroup`, render the default view
+    immediately. On the next `connect`, `drainAll()` flushes the
+    marker, then the deferred subscribe + debounce runs.
 
 ## Connection form
 
@@ -423,9 +465,9 @@ mwords/
   text input; submitting publishes a new `Group` to the same `<P>/g/<G>`
   topic with the updated `name`, the unchanged `id` and `created`, and a
   fresh `updated` (`Date.now() / 1000`). Cancel just reverts the UI.
-- "Create new group" inline input at the bottom. On submit, allocates a
-  fresh id (`Date.now().toString()`), publishes the `Group` marker via
-  the PublishQueue, and auto-switches to the new group.
+- "Create new group" inline input at the bottom. On submit, allocates
+  a fresh id (`Date.now().toString()`), publishes the `Group` marker
+  via the PublishQueue, then runs the group-switch sequence (step 10).
 - Both inputs validate the name against the rules in
   [data-model.md](./data-model.md) → "Group names (display only)".
 - Group deletion is **not in v1**; no delete affordance.
@@ -476,13 +518,17 @@ Concretely (in `lib/mqtt/client.ts`):
 const MIN = 1000, MAX = 30_000;
 let next = MIN;
 client.on('reconnect', () => {
-  client.options.reconnectPeriod = next;
-  // Double, jitter ±20%, then clamp — so MAX is a hard ceiling.
-  const doubled = next * 2;
-  const jittered = doubled * (0.8 + Math.random() * 0.4);
+  const jittered = next * 2 * (0.8 + Math.random() * 0.4);
   next = Math.min(MAX, Math.round(jittered));
+  client.options.reconnectPeriod = next;
 });
-client.on('connect', () => { next = MIN; });
+client.on('connect', () => {
+  // Reset BOTH — mqtt.js consumes `reconnectPeriod` before the next
+  // `reconnect` event fires, so resetting only `next` leaves a stale
+  // period in effect for the first post-reconnect wait.
+  next = MIN;
+  client.options.reconnectPeriod = MIN;
+});
 ```
 
 ### Connection badge during reconnect
@@ -520,7 +566,9 @@ A small module sitting between the stores and the MQTT client. Backed by
 IndexedDB via the `idb` library.
 
 **Shape:** an `intents` object store keyed by an auto-incremented sequence
-number, with this record:
+number, with a **secondary index on `topic`** (used by `publishIntent`'s
+dedupe-replace lookup so the operation is a single index probe rather
+than a `getAll`+filter scan). Record shape:
 
 ```ts
 type PublishIntent = {
@@ -553,16 +601,36 @@ it's derived at flush time from the payload's `updated` field (see
 publishIntent(topic, payload): Promise<void>;     // content publish
 publishTombstone(topic):       Promise<void>;     // zero-byte retain (delete)
 clear():                       Promise<void>;     // wipe queue (on Disconnect/forget)
-drainAll():                    Promise<void>;     // resolves when pendingCount
-                                                  // reaches 0 — every intent
-                                                  // currently in IDB has been
-                                                  // PUBACK'd and removed.
-                                                  // Used by the connect handler
-                                                  // before issuing SUBSCRIBE.
+drainAll():                    Promise<void>;     // captures the set of `seq`
+                                                  // values currently in IDB at
+                                                  // call time, and resolves when
+                                                  // every one of *those* rows
+                                                  // has been PUBACK'd and removed.
+                                                  // New intents enqueued after
+                                                  // the call are flushed normally
+                                                  // but do NOT extend the wait —
+                                                  // otherwise a user editing
+                                                  // during the connect-handler's
+                                                  // pre-subscribe window could
+                                                  // starve `drainAll()` and block
+                                                  // SUBSCRIBE indefinitely. Used
+                                                  // by the connect handler before
+                                                  // issuing SUBSCRIBE.
 
-pendingCount: number;                             // reactive ($state); count of
+pendingCount: number;                             // plain field — count of
                                                   // intents currently in IDB.
-                                                  // Used by the connection badge.
+                                                  // `lib/mqtt/queue.ts` stays
+                                                  // framework-agnostic, so it
+                                                  // does NOT use `$state` here.
+onChange(cb: () => void): () => void;             // register a callback fired
+                                                  // whenever `pendingCount`
+                                                  // changes; returns an
+                                                  // unsubscribe fn. Used by
+                                                  // `lib/stores/queue.svelte.ts`
+                                                  // — a thin Svelte shim that
+                                                  // mirrors the count into a
+                                                  // `$state` rune for the
+                                                  // connection badge.
 ```
 
 Both `publishIntent` and `publishTombstone` resolve **as soon as the intent
@@ -574,58 +642,82 @@ background and never blocks the UI thread.
 
 `pendingCount` is incremented when a new intent is written to IDB (or kept
 flat when a dedupe-replace happens — same row, same count) and decremented
-when a PUBACK callback deletes a record. It's the same number shown in the
+when a PUBACK callback deletes a record. `clear()` zeroes it in the same
+IDB transaction that wipes the store, so the badge transitions to "no
+pending" atomically with the deletion. It's the same number shown in the
 connection badge.
+
+**Concurrency rule.** Every mutation of an `intents` row happens
+**inside a fresh `readwrite` transaction**: open tx → re-read by
+`seq` → decide based on the re-read row (or skip if it's gone) →
+write back → commit. Never write a stale snapshot copy from a
+prior `getAll()` — a concurrent `publishIntent` may have
+dedupe-replaced the row, a sibling PUBACK may have deleted it, or a
+parallel `flush()` may have marked it in-flight. This pattern is
+shared by every path below; it's the only thing standing between us
+and lost updates / double publishes / `pendingCount` drift, and it
+removes the need for any top-level single-flight flag.
 
 **Behaviour:**
 
 - `publishIntent` / `publishTombstone`:
-  1. Dedupe — if an existing intent for the same `topic` exists **and is
-     not in-flight** (its `publishedAt` is unset), **replace** it in place
-     (same `seq`, new `payload`/`enqueuedAt`). If the existing intent **is**
-     in-flight (`publishedAt` set), do not touch it — append a new row
-     (fresh `seq`) instead. The in-flight one will be removed by its own
-     PUBACK; the new row gets flushed on the next cursor pass. This
-     guarantees a payload submitted to `mqtt.publish` is never quietly
-     replaced before its PUBACK lands. Tombstones and content publishes
-     dedupe each other (a later tombstone supersedes an earlier
-     non-in-flight content publish on the same topic, and vice-versa).
-  2. Write to IDB.
-  3. If connected, schedule a flush (microtask debounce).
+  1. **Dedupe** — open the tx, walk the `topic` index for the target
+     topic, pick the lowest-`seq` row with `publishedAt` unset, and
+     replace it in place (same `seq`, new `payload`/`enqueuedAt`).
+     If every row for the topic is in-flight, or there are none,
+     append a new row instead. Tombstones and content publishes
+     dedupe each other.
+  2. Commit the tx; if connected, schedule a flush (microtask
+     debounce).
 - `flush()` is called on `connect` (via `drainAll()`) and after each
   `publishIntent`:
-  1. Open a cursor over `intents` in `seq` order. Skip rows already marked
-     in-flight (`publishedAt` set) — they're already being awaited.
-  2. For each remaining intent, derive bytes + `timestamp` User Property,
-     mark the intent as in-flight, persist the marker, and call
-     `mqtt.publish`:
+  1. `store.getAll()` into a local array. Skip rows already marked
+     in-flight (`publishedAt` set). `mqtt.publish` is fire-and-forget
+     per intent; the per-intent PUBACK callback handles each
+     independently. No concurrency cap beyond the 10 k queue cap.
+  2. **Mark in-flight.** For each remaining intent, open a tx,
+     re-read by `seq`. If the row is missing or already in-flight,
+     skip. Otherwise set `publishedAt = Date.now() / 1000`, commit,
+     then call `mqtt.publish` with the re-read row's payload (do
+     **not** use the step-1 snapshot copy).
 
      ```ts
-     const bytes = intent.payload === null
+     const tx = idb.transaction('intents', 'readwrite');
+     const current = await tx.store.get(intent.seq);
+     if (!current || current.publishedAt !== undefined) {
+       await tx.done; continue;
+     }
+     current.publishedAt = Date.now() / 1000;
+     await tx.store.put(current);
+     await tx.done;
+
+     const bytes = current.payload === null
        ? new Uint8Array(0)
-       : new TextEncoder().encode(JSON.stringify(intent.payload));
-     const tsSec = (intent.payload !== null
-                    && typeof intent.payload.updated === 'number')
-       ? intent.payload.updated                       // already seconds
-       : Date.now() / 1000;                           // tombstone or no `updated`
-     const timestamp = tsSec.toString();
+       : new TextEncoder().encode(JSON.stringify(current.payload));
+     const tsSec = (current.payload !== null
+                    && typeof current.payload.updated === 'number')
+       ? current.payload.updated
+       : Date.now() / 1000;                           // tombstone / no `updated`
 
-     intent.publishedAt = Date.now() / 1000;
-     await idb.put('intents', intent);                // persist the in-flight flag
-
-     mqtt.publish(intent.topic, bytes, {
+     mqtt.publish(current.topic, bytes, {
        qos: 1,
-       retain: intent.retain,
-       properties: { userProperties: { timestamp } },
+       retain: current.retain,
+       properties: { userProperties: { timestamp: tsSec.toString() } },
      });
      ```
-  3. On the PUBACK callback (`mqtt.js` invokes our callback after broker ack),
-     delete that record from IDB by `seq` and decrement `pendingCount`. If
-     `pendingCount` reaches 0, resolve any in-flight `drainAll()` promise.
-     **Not** on synchronous return of `mqtt.publish` — that only means the
-     packet left the client.
-  4. On publish error, stop iterating; the row is left with its
-     `publishedAt` marker until the next disconnect cycle.
+  3. **`mqtt.publish` callback** `(err, packet)`. Apply the
+     concurrency rule (fresh tx, re-read by `seq`, skip if gone):
+     - **Success**: delete by `seq` (idempotent — only decrement
+       `pendingCount` when the delete actually removed a row).
+       Remove `seq` from any in-flight `drainAll()` snapshot set; if
+       the snapshot is now empty, resolve that promise. (`drainAll()`
+       resolves on snapshot drain, **not** on `pendingCount === 0`,
+       so post-call enqueues can't extend the wait.)
+     - **Error** (broker rejected, topic invalid, payload too large,
+       …) or **synchronous throw from `mqtt.publish`**: clear
+       `publishedAt` and put back. Do **not** delete. The next flush
+       retries. On a sync throw, also stop iterating the current
+       flush pass.
 - On mqtt.js's `close` (or `offline`) event, the wrapper clears
   `publishedAt` on every IDB row (a single bulk-update transaction). Any
   row that was in-flight when the connection dropped — PUBACK never
@@ -649,11 +741,14 @@ The IDB queue is **durable across reloads**. It's only cleared by:
 - Browser site-data clear.
 - Successful PUBACK callbacks during flush (per-record deletion).
 
-On boot, the app reads the queue from IDB before mounting the UI, so
-`pendingCount` is correct on first paint — the badge shows accumulated
-work from previous sessions immediately. Flush is then driven by mqtt.js's
-`connect` event, which fires on every successful (re)connect, including
-the first one of a fresh session.
+On boot, the app reads the queue from IDB before mounting the UI so
+`pendingCount` is correct on first paint. Same boot-read pass also
+**clears `publishedAt` on any row whose marker is more than 30 s
+old** — sessions that were force-quit or crashed mid-flush never
+fired `close`/`offline`, so without this cleanup their stale markers
+would stall `flush()` and `drainAll()` forever. The 30 s threshold
+leaves a sibling tab's live in-flight publishes alone (see Caveats
+on multi-tab IDB sharing). Flush itself is driven by `connect`.
 
 | Reload scenario             | What happens                                           |
 |-----------------------------|--------------------------------------------------------|

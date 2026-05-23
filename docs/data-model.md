@@ -96,7 +96,8 @@ are "orphans" and won't appear in the picker.
 Since `<G>` is now a numeric id, **the group name is purely a payload field**
 and carries no topic-routing constraints:
 
-- Length: `name.length <= 256` (a generous cap; UI input enforces this).
+- Length: `1 <= name.length <= 256` after trim (a generous upper cap;
+  empty / whitespace-only names rejected by the UI and validator).
 - **Any characters allowed**, including `/`, `+`, `#`, spaces, emoji,
   newlines (the last is discouraged but not blocked) — none of them appear
   in topic strings anymore.
@@ -282,7 +283,11 @@ type Direction = 'text' | 'translation';
 type Settings = {
   srsMode: SrsMode;              // default: 'sm2'
   direction: Direction;          // which side is shown first; default: 'text'
-  updated: number;               // epoch seconds; bumped on every publish
+  updated: number;               // epoch seconds; bumped on every publish.
+                                 // In-memory default is 0 (never-published
+                                 // sentinel, matching SrsState's convention)
+                                 // so the first incoming Settings publish
+                                 // from any peer wins the LWW gate.
 };
 ```
 
@@ -345,7 +350,7 @@ flags or user properties:
 
 ```ts
 // Persist a content intent. payload is serialized to JSON (then UTF-8).
-queue.publishIntent(topic: string, payload: object): Promise<void>;
+queue.publishIntent(topic: string, payload: Record<string, unknown>): Promise<void>;
 
 // Persist a tombstone intent (zero-byte retain, deletes the topic). Sugar for
 // publishing an empty Uint8Array with retain: true.
@@ -404,6 +409,16 @@ hitting a store. The validators are called with both the parsed payload
 and the topic-derived id (where applicable), so cross-checks happen in one
 place:
 
+- **Zero-byte short-circuit (tombstone path).** Inspect the raw payload's
+  byte length **before** any JSON work. If it's `0`, the message is a
+  retained-delete tombstone — dispatch a tombstone signal to the
+  appropriate store keyed by the topic-derived id and return. No
+  `JSON.parse`, no type guard, no range checks (none of them would
+  succeed on an empty buffer anyway: `JSON.parse("")` throws). The LWW
+  gate (see [`design.md`](./design.md) → Application lifecycle step 9)
+  is applied first using the message's `timestamp` MQTT 5 User
+  Property — the gate operates on the wire-level UP, not on a parsed
+  payload.
 - `JSON.parse` (catch syntax errors → log and drop).
 - Type-narrow with hand-written guards: `isGroup(x, topicId): x is Group`,
   `isWord(x, topicId): x is Word`, `isSrsState(x, topicId): x is SrsState`,
@@ -414,14 +429,27 @@ place:
   message with a warning that includes both values. (Mismatches indicate
   a hand-publish error or a misbehaving client — trusting the wrong id
   would let a payload effectively hijack the wrong topic.)
-- **Range checks.** `updated` must be a finite non-negative number on
-  every payload type (the `0` sentinel used by in-memory defaults is
-  acceptable, though such records are never published). For `Group` and
-  `Word`, `created` likewise must be finite non-negative with
-  `created <= updated`. `Group.name` is trimmed of edge whitespace and
-  must satisfy `name.length <= 256`. No upper bound against `Date.now()` —
-  clock skew between devices would otherwise cause valid messages to be
-  dropped.
+- **Range checks (closed list).** Beyond `JSON.parse` + type guards,
+  the validator applies range checks **only** to the fields listed
+  here; every other numeric / string field is accepted as-is once it
+  passes the type guard.
+  - `updated`, on every payload type, must be a finite non-negative
+    number. (The `0` sentinel used by in-memory `SrsState` defaults
+    is acceptable; such records are never published.)
+  - `created`, on `Group` and `Word`, must be a finite non-negative
+    number with `created <= updated`.
+  - `Group.name` is trimmed of edge whitespace and must satisfy
+    `1 <= name.length <= 256` after trim (empty names rejected).
+  - No upper bound against `Date.now()` — clock skew between devices
+    would otherwise cause valid messages to be dropped.
+
+  Other `SrsState` fields (`ease`, `intervalDays`, `due`, `reps`,
+  `lapses`, `reviewCount`), `Word.text`, `Word.translation`, and the
+  `Settings` enum fields rely on the type guard's `typeof` / literal
+  checks. The broker is the source of truth and the worst case for a
+  weird-but-typed value (`ease = 0.1`, `text = ""`) is a single odd
+  card, not a corrupted store — so we don't pay the validator-surface
+  cost of constraining them further.
 - On validation failure: log the topic + payload, drop the message,
   surface a toast in dev mode only.
 

@@ -26,10 +26,11 @@ const QUALITY: Record<Grade, number> = {
 
 ## SM-2 (`lib/srs/sm2.ts`)
 
-Faithful implementation of the SM-2 algorithm published by P. A. Wozniak in 1987.
-Anki used a variant of this from inception until v23.10. For this app a textbook
-SM-2 is enough — we don't need Anki's learning steps, leech detection, or
-new-card limits in v1.
+Faithful implementation of the SM-2 algorithm developed by P. A. Wozniak
+in the late 1980s (first shipped in SuperMemo 1.0 and formalised in his
+1990 master's thesis). Anki used a variant of this from inception until
+v23.10. For this app a textbook SM-2 is enough — we don't need Anki's
+learning steps, leech detection, or new-card limits in v1.
 
 ### State (relevant fields)
 
@@ -58,10 +59,6 @@ reps         = state.reps
 intervalDays = state.intervalDays
 lapses       = state.lapses
 
-// Update ease first — the new ease feeds the interval formula below
-// (textbook SM-2 order).
-ease = max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
-
 if q < 3:               // Again
   reps = 0
   intervalDays = 0      // due again immediately (same session)
@@ -72,8 +69,13 @@ else:
   elif reps == 1:
     intervalDays = 6
   else:
-    intervalDays = round(intervalDays * ease)   // integer days; uses new ease
+    intervalDays = round(intervalDays * ease)   // integer days; uses OLD ease
   reps += 1
+
+// Update ease AFTER computing intervalDays — matches Wozniak's original
+// SM-2 spec (I(n) := I(n-1) * EF uses the *previous* EF; EF is updated
+// after).
+ease = max(1.3, ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)))
 
 due         = now + intervalDays * 86_400       // seconds in a day
 lastGrade   = grade
@@ -97,8 +99,10 @@ Notes on the ease formula (which applies regardless of grade branch):
 
 ### Picking the next card (SM-2 mode)
 
-1. Filter words to those whose `srs.due <= now` (or have no `srs` record yet,
-   i.e. brand-new cards — those default to "due now").
+1. Filter words to those due now. For each `word`, look up
+   `args.srs.get(word.id)` — if present, include if its `due <= now`;
+   if absent (a brand-new card), include it (the in-memory default has
+   `due = Date.now() / 1000`, i.e. due now anyway).
 2. If the filtered set is empty, the session is done — show a "no cards due"
    message with the time until the next card.
 3. Otherwise, sort by `due` ascending and return the first. Ties broken by
@@ -126,10 +130,15 @@ algorithm only influences **probability of being picked**, not whether.
 
 ### Weights
 
+A word with **no `SrsState` entry yet** (brand-new card whose SRS topic
+hasn't been published) is treated as `defaultSrs(word.id)` — i.e.
+`lastGrade: null` → weight 1.0 — exactly as in the SM-2 picker. The
+weight function therefore never sees an `undefined` input.
+
 ```
 weight(srsState):
   switch srsState.lastGrade:
-    case null:    return 1.0       // never reviewed
+    case null:    return 1.0       // never reviewed (also the absent-entry case)
     case 'again': return 4.0
     case 'hard':  return 2.0
     case 'good':  return 1.0
@@ -140,8 +149,9 @@ weight(srsState):
 
 1. Build a weights array over all words: `w_i = weight(srsState_i)`.
 2. Pick index `i` with probability `w_i / Σ w`.
-3. Avoid immediate repeats: if the picked word equals the previously shown
-   word and the deck has >1 word, pick again (cap retries at 5).
+3. Avoid immediate repeats: if the picked word's `id` equals
+   `args.previousId` and the deck has >1 word, pick again (cap retries
+   at 5). `previousId` is supplied by the caller through `PickArgs`.
 
 ## Serial (`lib/srs/serial.ts`)
 
@@ -190,6 +200,9 @@ type PickArgs = {
   settings: Settings;
   now: number;             // epoch seconds
   previousId?: string;
+  rng?: () => number;      // optional; weighted.pick falls back to
+                           //   Math.random when omitted. Other modes
+                           //   ignore it.
 };
 
 export function pickNext(args: PickArgs): Word | null {
