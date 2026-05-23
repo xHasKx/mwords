@@ -174,7 +174,7 @@
             </form>
             {#if editError}<div class="error">{editError}</div>{/if}
           {:else}
-            <div class="group-row">
+            <div class="group-row" class:current={app.activeGroupId === g.id}>
               <button
                 class="select"
                 onclick={() => pick(g.id)}
@@ -264,6 +264,10 @@
     background: var(--bg-2);
     border-radius: 8px;
     overflow: hidden;
+    border: 2px solid transparent;
+  }
+  .group-row.current {
+    border-color: var(--accent);
   }
   .group-row .select {
     flex: 1;
