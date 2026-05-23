@@ -39,9 +39,14 @@
 <div class="badge" title={app.connectionError ?? text}>
   <span class="dot" style:background={colors[app.connection]}></span>
   <span class="text">{text}</span>
-  {#if queueStore.pendingCount > 0}
-    <span class="pending">· {queueStore.pendingCount} pending</span>
-  {/if}
+  <span
+    class="pending"
+    style:visibility={queueStore.pendingCount > 0 ? 'visible' : 'hidden'}
+    aria-label="pending publishes"
+    aria-hidden={queueStore.pendingCount > 0 ? undefined : 'true'}
+  >
+    {queueStore.pendingCount}
+  </span>
 </div>
 
 <style>
@@ -60,6 +65,12 @@
   }
   .pending {
     color: var(--fg-3);
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    min-width: 2ch;
+    text-align: right;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: var(--bg-3);
   }
 </style>
