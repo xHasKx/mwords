@@ -21,10 +21,17 @@ import { isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
 import { decodeShare, encodeShare, type SharePayload } from '../share.ts';
 import { exportAll as exportAllOverNewClient, exportFilename, triggerDownload } from '../export.ts';
 import { parseImportFile } from '../import.ts';
+import {
+  type Intent,
+  type ModalState,
+  type PickerReturn,
+  type View,
+  readIntent,
+  reconcileOnPop,
+  STATE_KEY as HISTORY_STATE_KEY,
+} from '../history.ts';
 
 const SHARE_HASH_PREFIX = '#share=';
-
-type View = 'connect' | 'picker' | 'review' | 'edit' | 'settings';
 
 const SYNC_DEBOUNCE_MS = 500;
 
@@ -53,7 +60,11 @@ class AppStore {
   // record where to return to on cancel. Null when the picker is
   // reached as the natural post-connect landing (no group to go back
   // to), so the Back button stays hidden.
-  pickerReturn = $state<View | null>(null);
+  pickerReturn = $state<PickerReturn | null>(null);
+  // Hoisted modal state (word editor, group rename). Components read this
+  // to decide what to render; entering/leaving a modal always goes through
+  // pushIntent / goBack so back-button and ✖ share a path.
+  modal = $state<ModalState | null>(null);
   // Set by init() if the page was opened with a `#share=` hash. Carries
   // the imported broker URL / username / password / prefix the form
   // should pre-fill from. Cleared after the user submits (so the next
@@ -62,6 +73,7 @@ class AppStore {
 
   private mqtt: MqttWrapper | null = null;
   private storedConn: StoredConnection | null = null;
+  private historyListenerInstalled = false;
 
   // Tombstone watermarks. Map<id, lastTombstoneTimestampSec>. In-memory
   // only — survives reconnects within a session, lost on reload. Stops
@@ -76,7 +88,6 @@ class AppStore {
 
   init(): void {
     this.storedConn = creds.read();
-    this.view = 'connect';
     void queue.init();
     // Share-link arrival: pre-fill the form from the URL hash and skip
     // autoconnect so the user can review the incoming creds before
@@ -85,11 +96,90 @@ class AppStore {
     const shared = this.consumeShareHash();
     if (shared) {
       this.shareImport = shared;
-      return;
     }
+    // Seed history with the initial intent. Either the boot enters via the
+    // connect form (default) or, if autoconnect fires below, the post-
+    // connect transition will pushIntent on top of this seed — so back
+    // from a connected view returns to the connect form.
+    this.replaceIntent({ view: 'connect' });
+    this.installHistoryListener();
+    if (shared) return;
     if (this.storedConn?.autoconnect) {
       this.connect(this.storedConn);
     }
+  }
+
+  // History-state mutators. Components and store internals route every
+  // navigation through these; never assign view / modal / pickerReturn
+  // directly outside of applyIntent.
+  pushIntent(next: Intent): void {
+    this.applyIntent(next);
+    if (typeof window === 'undefined') return;
+    window.history.pushState({ [HISTORY_STATE_KEY]: next }, '');
+  }
+
+  replaceIntent(next: Intent): void {
+    this.applyIntent(next);
+    if (typeof window === 'undefined') return;
+    window.history.replaceState({ [HISTORY_STATE_KEY]: next }, '');
+  }
+
+  // Navigate one step back; popstate does the actual store mutation.
+  goBack(): void {
+    if (typeof window === 'undefined') return;
+    window.history.back();
+  }
+
+  // Apply an intent to the store's runes. No history side effects.
+  private applyIntent(next: Intent): void {
+    this.view = next.view;
+    this.modal = next.modal ?? null;
+    this.pickerReturn = next.view === 'picker' ? (next.pickerReturn ?? null) : null;
+  }
+
+  private installHistoryListener(): void {
+    if (typeof window === 'undefined') return;
+    if (this.historyListenerInstalled) return;
+    this.historyListenerInstalled = true;
+    window.history.scrollRestoration = 'manual';
+    window.addEventListener('popstate', (e) => this.handlePopstate(e));
+  }
+
+  private handlePopstate(e: PopStateEvent): void {
+    const popped = readIntent(e.state);
+    if (!popped) {
+      // No mwords intent on this entry — pretend we're back at the seed.
+      this.replaceIntent({ view: 'connect' });
+      return;
+    }
+    const r = reconcileOnPop(popped, {
+      connected: this.connection === 'connected',
+      hasActiveGroup: this.activeGroupId !== null,
+    });
+    if (r.action === 'reset-to-connect') {
+      this.replaceIntent({ view: 'connect' });
+      return;
+    }
+    this.applyIntent(r.intent);
+  }
+
+  // Convenience helpers used by views/components. Each one is a single
+  // pushIntent call, but giving them names keeps call sites self-documenting.
+  navTo(v: 'review' | 'edit' | 'settings'): void {
+    if (this.view === v && this.modal === null) return;
+    this.pushIntent({ view: v });
+  }
+
+  openWordEditor(wordId?: string): void {
+    this.pushIntent({ view: 'edit', modal: { kind: 'word-editor', wordId } });
+  }
+
+  openRenameGroup(groupId: string): void {
+    this.pushIntent({
+      view: 'picker',
+      modal: { kind: 'rename-group', groupId },
+      pickerReturn: this.pickerReturn ?? undefined,
+    });
   }
 
   private consumeShareHash(): SharePayload | null {
@@ -170,7 +260,7 @@ class AppStore {
       this.storedConn = { ...this.storedConn, autoconnect: false };
       creds.update({ autoconnect: false });
     }
-    this.view = 'connect';
+    this.replaceIntent({ view: 'connect' });
   }
 
   async disconnectAndForget(): Promise<void> {
@@ -226,7 +316,8 @@ class AppStore {
       void this.selectGroup(last);
     } else {
       if (last && !this.groups.has(last)) creds.clearLastGroup();
-      this.view = 'picker';
+      // Connect → picker is a forward step in the back stack.
+      this.pushIntent({ view: 'picker' });
     }
   }
 
@@ -424,8 +515,11 @@ class AppStore {
       this.words.clear();
       this.srs.clear();
       this.activeGroupId = null;
-      this.pickerReturn = null;
       creds.clearLastGroup();
+      // The "return to previous view" handle is dead — that view referenced
+      // the now-deleted group. Replace the current picker entry to drop it
+      // along with any stale modal flag.
+      this.replaceIntent({ view: 'picker' });
     } else if (this.storedConn.lastGroup === id) {
       creds.clearLastGroup();
     }
@@ -561,24 +655,32 @@ class AppStore {
       }
       // Else: offline — defer the subscribe. afterConnect on the next
       // successful connect will subscribe phase-2 for activeGroupId.
-      this.view = 'review';
-      this.pickerReturn = null;
+      //
+      // From the picker (initial pick or switch-group), replace — the
+      // picker entry served its purpose, and back from review should
+      // walk past it. From the connect form (autoconnect with a
+      // resolved lastGroup), push — so back from review returns to
+      // the connect form per the design's "connect form poppable" rule.
+      if (this.view === 'connect') {
+        this.pushIntent({ view: 'review' });
+      } else {
+        this.replaceIntent({ view: 'review' });
+      }
     } finally {
       this.switching = false;
     }
   }
 
   switchGroup(): void {
-    if (this.view === 'review' || this.view === 'edit' || this.view === 'settings') {
-      this.pickerReturn = this.view;
-    }
-    this.view = 'picker';
+    const from = this.view;
+    if (from !== 'review' && from !== 'edit' && from !== 'settings') return;
+    this.pushIntent({ view: 'picker', pickerReturn: from });
   }
 
   cancelSwitchGroup(): void {
     if (this.pickerReturn === null) return;
-    this.view = this.pickerReturn;
-    this.pickerReturn = null;
+    // popstate does the actual state change.
+    this.goBack();
   }
 
   async addWord(text: string, translation: string): Promise<void> {

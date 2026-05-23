@@ -3,23 +3,30 @@
   import WordEditor from '../components/WordEditor.svelte';
   import type { Word } from '../lib/types.ts';
 
-  let editing = $state<{ open: boolean; word: Word | null }>({ open: false, word: null });
-
   const words = $derived(
     Array.from(app.words.values()).sort((a, b) => Number(b.id) - Number(a.id)),
   );
 
-  function openAdd() { editing = { open: true, word: null }; }
-  function openEdit(w: Word) { editing = { open: true, word: w }; }
-  function close() { editing = { open: false, word: null }; }
+  // Modal state lives in the store so the popstate listener can close it.
+  const editingWordId = $derived(
+    app.modal?.kind === 'word-editor' ? app.modal.wordId ?? null : null,
+  );
+  const editorOpen = $derived(app.modal?.kind === 'word-editor');
+  const editorWord: Word | null = $derived(
+    editingWordId !== null ? app.words.get(editingWordId) ?? null : null,
+  );
+
+  function openAdd() { app.openWordEditor(); }
+  function openEdit(w: Word) { app.openWordEditor(w.id); }
+  function close() { app.goBack(); }
 
   async function save(text: string, translation: string) {
-    if (editing.word) await app.updateWord(editing.word.id, text, translation);
+    if (editorWord) await app.updateWord(editorWord.id, text, translation);
     else await app.addWord(text, translation);
   }
 
   async function remove() {
-    if (editing.word) await app.deleteWord(editing.word.id);
+    if (editorWord) await app.deleteWord(editorWord.id);
   }
 </script>
 
@@ -42,13 +49,15 @@
   <button class="fab primary" onclick={openAdd} aria-label="Add word">+</button>
 </div>
 
-{#if editing.open}
-  <WordEditor
-    initial={editing.word}
-    onSave={save}
-    onDelete={editing.word ? remove : undefined}
-    onClose={close}
-  />
+{#if editorOpen}
+  {#key editingWordId ?? '__new__'}
+    <WordEditor
+      initial={editorWord}
+      onSave={save}
+      onDelete={editorWord ? remove : undefined}
+      onClose={close}
+    />
+  {/key}
 {/if}
 
 <style>

@@ -1,17 +1,32 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../lib/stores/app.svelte.ts';
 
   let newName = $state('');
   let createError = $state<string | null>(null);
   let busy = $state(false);
 
-  let editingId = $state<string | null>(null);
   let editingName = $state('');
   let editError = $state<string | null>(null);
   let renameInput: HTMLInputElement | null = $state(null);
 
+  // Reactive id of the row currently being renamed, derived from store state.
+  const renamingId = $derived(
+    app.modal?.kind === 'rename-group' ? app.modal.groupId : null,
+  );
+
+  // When the rename modal opens for a new id, seed the input from the
+  // current group name and focus it. untrack keeps the seed assignment
+  // from re-firing on every group-map change.
   $effect(() => {
-    if (editingId !== null && renameInput) renameInput.focus();
+    const id = renamingId;
+    if (id === null) return;
+    untrack(() => {
+      const g = app.groups.get(id);
+      editingName = g?.name ?? '';
+      editError = null;
+    });
+    queueMicrotask(() => renameInput?.focus());
   });
 
   async function create(e: Event) {
@@ -29,7 +44,7 @@
   }
 
   async function pick(id: string) {
-    if (editingId === id) return;
+    if (renamingId === id) return;
     busy = true;
     try {
       await app.selectGroup(id);
@@ -50,26 +65,23 @@
     }
   }
 
-  function startRename(id: string, currentName: string) {
-    editingId = id;
-    editingName = currentName;
-    editError = null;
+  function startRename(id: string) {
+    app.openRenameGroup(id);
   }
 
   function cancelRename() {
-    editingId = null;
-    editingName = '';
-    editError = null;
+    app.goBack();
   }
 
   async function submitRename(e: Event) {
     e.preventDefault();
-    if (!editingId) return;
+    const id = renamingId;
+    if (id === null) return;
     editError = null;
     busy = true;
     try {
-      await app.renameGroup(editingId, editingName);
-      cancelRename();
+      await app.renameGroup(id, editingName);
+      app.goBack();
     } catch (err) {
       editError = (err as Error).message;
     } finally {
@@ -145,7 +157,7 @@
     <ul class="groups">
       {#each sortedGroups as g (g.id)}
         <li>
-          {#if editingId === g.id}
+          {#if renamingId === g.id}
             <form class="rename-row" onsubmit={submitRename}>
               <input
                 bind:this={renameInput}
@@ -173,7 +185,7 @@
               </button>
               <button
                 class="edit"
-                onclick={() => startRename(g.id, g.name)}
+                onclick={() => startRename(g.id)}
                 disabled={busy}
                 aria-label="Rename group"
                 title="Rename"

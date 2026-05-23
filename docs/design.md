@@ -1009,6 +1009,155 @@ Flush itself is driven by `connect`.
 - If the user clears site data, IndexedDB goes with it — unflushed intents
   are lost. Acceptable: this is the same blast radius as `localStorage`.
 
+## Back navigation
+
+On mobile, the hardware/gesture back button is the primary "undo this step"
+affordance. In v1 the app ignored it entirely — every press unloaded the SPA.
+v2 wires the app into `window.history` so back/forward feel native: dismiss
+the open modal, leave the switch-group picker, walk back through the tabs
+the user actually visited, and only exit when there's nothing left to undo.
+
+No URL routing. The address bar never changes (except the one-shot share-hash
+scrub on boot). History entries carry a synthetic `state` payload only; the
+pathname is fixed at `/mwords/`. Hash-based deep linking is out of scope —
+see "Out of scope for v1".
+
+### Intent as the unit of history
+
+The app's navigable state is reduced to an **intent**:
+
+```ts
+type Intent = {
+  view: 'connect' | 'picker' | 'review' | 'edit' | 'settings';
+  modal?:
+    | { kind: 'word-editor'; wordId?: string }  // wordId absent ⇒ new word
+    | { kind: 'rename-group'; groupId: string };
+  pickerReturn?: 'review' | 'edit' | 'settings';  // only with view: 'picker'
+};
+```
+
+This is the **only** thing pushed to `history.state` (under a `mwords` key to
+namespace against any future use of `history.state`). The store still has its
+existing fine-grained runes (`view`, `pickerReturn`, modal-open flags, etc.);
+the intent is just the projection that matters for navigation.
+
+### Push, replace, and the single mutator
+
+The store grows two methods:
+
+- `pushIntent(next: Intent)` — apply `next` to the store's runes, then
+  `history.pushState({ mwords: next }, '')`.
+- `replaceIntent(next: Intent)` — apply `next`, then `history.replaceState`.
+
+Every existing affordance that changes view, opens/closes a modal, or enters
+the switch-group flow routes through one of these — direct mutation of
+`app.view` / `app.pickerReturn` is removed from components. Affordances using
+each:
+
+| Action                                                | Method            |
+| ----------------------------------------------------- | ----------------- |
+| `init()` seeds the first entry                        | `replaceIntent`   |
+| Connect form submit success → picker (no `lastGroup`) | `pushIntent`      |
+| Connect form submit success → review (with `lastGroup`)| `pushIntent`     |
+| Picker row picked → review                            | `pushIntent`      |
+| Nav-bar tab tap (review ↔ edit ↔ settings)            | `pushIntent`      |
+| Nav-bar "switch group" → picker                       | `pushIntent` (with `pickerReturn`) |
+| Picker pencil → rename modal                          | `pushIntent`      |
+| Edit "Add word" / row tap → word-editor modal         | `pushIntent`      |
+| Modal Save / Cancel / ✖                               | `history.back()` (see below) |
+| Picker "Back" arrow in switch mode                    | `history.back()`  |
+| Settings → Disconnect → connect form                  | `replaceIntent`   |
+| Share-hash scrub                                      | `history.replaceState` (already in place) |
+
+### popstate is the single applier
+
+A single `popstate` listener installed at `init()` reads `event.state?.mwords`
+and applies it to the store. Modal close, picker cancel, and tab back all
+flow through here:
+
+1. User (or in-app button) triggers `history.back()`.
+2. Browser fires `popstate` with the previous entry's intent.
+3. Listener diffs the popped intent against the store's current state and
+   applies the delta (close modal, switch view, leave picker, etc.).
+
+Closing a modal via its in-modal button calls `history.back()` rather than
+mutating the store directly. The popstate listener then does the actual
+state change. One source of truth for "modal closed" regardless of whether
+the user used the back button or the ✖.
+
+No re-entrancy guard is needed because the store mutations performed by
+popstate do **not** call `pushIntent` / `replaceIntent` — they apply state
+directly. The only thing that pushes is forward-navigation code paths.
+
+### Boot, autoconnect, and the seed entry
+
+`app.init()` must leave `history.state.mwords` non-null so popstate handlers
+can rely on it. Seeding rules:
+
+- Share-hash present (`#share=…`): consume + scrub the hash (already done),
+  then `replaceIntent({ view: 'connect' })`. Back exits the SPA.
+- Stored creds with `autoconnect: true`: `replaceIntent({ view: 'connect' })`,
+  then once `connected` arrives and the group resolves, `pushIntent` to the
+  post-connect view. Back from that view returns to the connect form
+  (matches the "Should the connect form be poppable? — Yes" decision).
+- Stored creds without autoconnect, or no creds: `replaceIntent({ view: 'connect' })`.
+
+The post-connect destination follows the existing rule: if `lastGroup`
+resolves to a discovered group → `view: 'review'`, otherwise → `view: 'picker'`
+(no `pickerReturn` — this is the natural landing, not a switch-group flow).
+
+### Disconnect from Settings
+
+`replaceIntent({ view: 'connect' })`. We cannot clear forward history from
+JS, so an entry like `[…, settings, connect]` survives — but the user can
+still press forward (or, on iOS, a second-finger forward gesture) and land
+on an intent that says `view: 'settings'` while the app is disconnected.
+
+The popstate / state-applier handles this with a **preconditions check**: if
+the popped intent requires `connection === 'connected'` and an active group
+(true for `review`, `edit`, `settings`) and either isn't present, the
+listener falls back to `replaceIntent({ view: 'connect' })` instead of
+applying the popped intent. Net effect: back/forward never lands the user in
+a UI state the store can't actually support.
+
+### scrollRestoration
+
+`history.scrollRestoration = 'manual'` set once at boot. Otherwise the
+browser tries to restore per-entry scroll on popstate, which jumps the user
+mid-list when returning to a long Edit view. Each view manages its own
+scroll (default: top on enter).
+
+### Caveats
+
+- **No hash routing.** Deep-linking a specific view, group, or word is not
+  supported. A user who shares `https://…/mwords/#/review` lands on the
+  default boot view, not Review. Adding routes is a separate feature.
+- **Forward history isn't clearable.** Disconnect, group delete, and other
+  destructive transitions leave stale forward entries reachable. The
+  preconditions check in popstate keeps the UI consistent, but the user can
+  see "nothing happened" on forward in those cases. Acceptable for v1.
+- **iOS Safari fires popstate synchronously**, modern Chromium asynchronously.
+  The design tolerates both because the close path doesn't depend on timing.
+- **Native `<details>` / `<select>` dismissal**. Some browsers do *not*
+  expose `<details>` open/close to history; back will not collapse the
+  Import / Export `<details>` block. That's fine — it's a disclosure, not a
+  modal. Same for native picker overlays.
+- **Multi-tab.** Each tab has its own `history`, so back behaviour is per-tab.
+  No coordination needed.
+
+### Tests
+
+`tests/history.test.ts` (using jsdom's `window.history` + a manual popstate
+dispatch):
+
+- `init()` calls `replaceState` with `{mwords: {view: 'connect'}}` exactly once.
+- Each push-listed action above calls `pushState` once with the expected intent.
+- Simulated `popstate` carrying a prior intent restores it on the store.
+- Popstate carrying a connected-only intent while disconnected falls back to
+  `view: 'connect'` and calls `replaceState`.
+- Closing a modal via its button calls `history.back()` and not direct
+  store mutation; popstate then clears the modal.
+
 ## UI design
 
 Mobile-first. The app is designed to be used on a phone, in portrait, often

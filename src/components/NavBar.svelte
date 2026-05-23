@@ -3,7 +3,7 @@
   import ConnectionBadge from './ConnectionBadge.svelte';
 
   type View = 'review' | 'edit' | 'settings';
-  function go(v: View) { app.view = v; }
+  function go(v: View) { app.navTo(v); }
   function switchGroup() { app.switchGroup(); }
 </script>
 
