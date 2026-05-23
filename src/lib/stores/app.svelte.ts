@@ -35,6 +35,11 @@ class AppStore {
 
   view = $state<View>('connect');
   switching = $state(false);
+  // When the picker is opened via the nav-bar "switch group" affordance,
+  // record where to return to on cancel. Null when the picker is
+  // reached as the natural post-connect landing (no group to go back
+  // to), so the Back button stays hidden.
+  pickerReturn = $state<View | null>(null);
 
   private mqtt: MqttWrapper | null = null;
   private storedConn: StoredConnection | null = null;
@@ -371,13 +376,23 @@ class AppStore {
       // Else: offline — defer the subscribe. afterConnect on the next
       // successful connect will subscribe phase-2 for activeGroupId.
       this.view = 'review';
+      this.pickerReturn = null;
     } finally {
       this.switching = false;
     }
   }
 
   switchGroup(): void {
+    if (this.view === 'review' || this.view === 'edit' || this.view === 'settings') {
+      this.pickerReturn = this.view;
+    }
     this.view = 'picker';
+  }
+
+  cancelSwitchGroup(): void {
+    if (this.pickerReturn === null) return;
+    this.view = this.pickerReturn;
+    this.pickerReturn = null;
   }
 
   async addWord(text: string, translation: string): Promise<void> {

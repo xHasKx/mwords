@@ -71,7 +71,12 @@
 </script>
 
 <div class="col">
-  <h1>Pick a group</h1>
+  <div class="head">
+    {#if app.pickerReturn !== null}
+      <button class="back" onclick={() => app.cancelSwitchGroup()} aria-label="Back" title="Back">←</button>
+    {/if}
+    <h1>Pick a group</h1>
+  </div>
 
   {#if sortedGroups.length === 0}
     <p class="muted">No groups yet. Create one below.</p>
@@ -129,6 +134,22 @@
 </div>
 
 <style>
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .head h1 { margin: 0; }
+  .back {
+    background: transparent;
+    border: none;
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+    padding: 0;
+    font-size: 1.25rem;
+    color: var(--fg-2);
+  }
   .groups { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
   .group-row {
     display: flex;
