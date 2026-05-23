@@ -25,6 +25,19 @@
     }),
   );
 
+  const front = $derived(
+    current ? (app.settings.direction === 'translation' ? current.translation : current.text) : '',
+  );
+  const back = $derived(
+    current ? (app.settings.direction === 'translation' ? current.text : current.translation) : '',
+  );
+
+  // Reset the reveal when the prompt side changes (new card or direction flip).
+  $effect(() => {
+    void front;
+    revealed = false;
+  });
+
   function onGrade(g: Grade) {
     const w = current;
     if (!w) return;
@@ -42,7 +55,7 @@
       <p>Switch to <strong>Edit</strong> below to add some.</p>
     </div>
   {:else if current}
-    <ReviewCard word={current} {revealed} onReveal={() => (revealed = true)} />
+    <ReviewCard {front} {back} {revealed} onReveal={() => (revealed = true)} />
     {#if revealed}
       <GradeButtons srs={app.srs.get(current.id) ?? defaultSrs(current.id)} {onGrade} />
     {/if}

@@ -1,15 +1,13 @@
 <script lang="ts">
-  import type { Word } from '../lib/types.ts';
-
-  type Props = { word: Word; revealed: boolean; onReveal: () => void };
-  let { word, revealed, onReveal }: Props = $props();
+  type Props = { front: string; back: string; revealed: boolean; onReveal: () => void };
+  let { front, back, revealed, onReveal }: Props = $props();
 </script>
 
 <button class="card review" type="button" onclick={onReveal} aria-expanded={revealed}>
-  <div class="front">{word.text}</div>
+  <div class="front">{front}</div>
   {#if revealed}
     <hr />
-    <div class="back">{word.translation}</div>
+    <div class="back">{back}</div>
   {:else}
     <div class="hint muted">Tap to reveal</div>
   {/if}
