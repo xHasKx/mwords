@@ -536,9 +536,39 @@ binding without re-typing.
   via the PublishQueue, then runs the group-switch sequence (step 10).
 - Both inputs validate the name against the rules in
   [data-model.md](./data-model.md) → "Group names (display only)".
-- Group deletion is **not in v1**; no delete affordance.
+- **Each row also has an inline "delete" affordance** (✖, danger-coloured)
+  with a `confirm()` dialog. See "Group deletion" below for the publish
+  shape and broker caveats.
 - Reachable any time via a "switch group" entry in the nav bar. Switching
   is cheap — only the two group-scoped subscriptions change.
+
+### Group deletion
+
+Tap the ✖ on a group row, confirm, and the picker publishes **two
+tombstones** (both empty payload, `retain: true, qos: 1`) via the
+PublishQueue:
+
+1. `<P>/g/<G>/#` — a retained-empty publish to the wildcard-subtree
+   topic. **This is a broker-specific extension.** flespi treats it
+   as "clear all retained messages under this prefix" — so all the
+   group's `words/<id>` and `srs/<id>` retained messages disappear in
+   one shot. The MQTT 5 spec doesn't require this behaviour; on a
+   strict broker the publish may be rejected (since `#` is a reserved
+   wildcard character in topic strings) or stored as a literal `#`-
+   suffixed topic, leaving the words/srs as orphans. Accepted for v1
+   on the assumption the user is on flespi; documented for porting.
+2. `<P>/g/<G>` — the group marker itself, so peers drop it from their
+   picker via the usual tombstone path.
+
+Local cleanup happens optimistically before the publish (the
+tombstones live in the durable queue, so they survive a flaky
+connection). If the deleted group was active, mwords also
+unsubscribes the phase-2 filters, clears the words/srs maps, clears
+`lastGroup` and `pickerReturn`, and sets `activeGroupId = null`.
+There is **no tombstone watermark for groups** in v1 — a peer's
+stale `Group` republish for the deleted id could in principle
+resurrect it. Accepted on the same "users rarely delete groups"
+basis as the broker caveat above.
 
 ## Offline behavior
 

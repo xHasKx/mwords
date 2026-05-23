@@ -404,6 +404,48 @@ class AppStore {
     }
   }
 
+  async deleteGroup(id: string): Promise<void> {
+    if (!this.storedConn) throw new Error('not connected');
+    const existing = this.groups.get(id);
+    if (!existing) return;
+    const prefix = this.storedConn.prefix;
+
+    // Optimistic local cleanup. We don't try to restore on publish
+    // failure: the user intent was to delete, and the tombstones live
+    // in the durable queue (they'll flush on the next connect).
+    const wasActive = this.activeGroupId === id;
+    this.groups.delete(id);
+    if (wasActive) {
+      if (this.mqtt?.isConnected() === true) {
+        await this.mqtt.unsubscribeMany([wordsFilter(prefix, id), srsFilter(prefix, id)]);
+      }
+      this.words.clear();
+      this.srs.clear();
+      this.activeGroupId = null;
+      this.pickerReturn = null;
+      creds.clearLastGroup();
+    } else if (this.storedConn.lastGroup === id) {
+      creds.clearLastGroup();
+    }
+
+    // Two tombstones:
+    //   1. `<P>/g/<G>/#` — broker-specific subtree wipe. flespi
+    //      treats a retained empty publish to a wildcard topic as
+    //      "clear all retained under this prefix" (non-standard MQTT
+    //      extension). On brokers without this behavior the publish
+    //      may be rejected or stored as a literal "#" topic; words
+    //      and srs retained messages are then orphaned. Acceptable
+    //      for v1 — documented in design.md.
+    //   2. `<P>/g/<G>` — the group marker itself.
+    try {
+      await queue.publishTombstone(`${prefix}/g/${id}/#`);
+      await queue.publishTombstone(groupTopic(prefix, id));
+    } catch (err) {
+      this.publishError = (err as Error).message;
+      throw err;
+    }
+  }
+
   async selectGroup(gid: string): Promise<void> {
     if (!this.storedConn) return;
     const prefix = this.storedConn.prefix;

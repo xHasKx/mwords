@@ -38,6 +38,18 @@
     }
   }
 
+  async function remove(id: string, name: string) {
+    if (!confirm(`Delete group "${name}"? All its words and review history will be removed. This cannot be undone.`)) return;
+    busy = true;
+    try {
+      await app.deleteGroup(id);
+    } catch (err) {
+      alert(`Delete failed: ${(err as Error).message}`);
+    } finally {
+      busy = false;
+    }
+  }
+
   function startRename(id: string, currentName: string) {
     editingId = id;
     editingName = currentName;
@@ -116,6 +128,13 @@
                 aria-label="Rename group"
                 title="Rename"
               >✎</button>
+              <button
+                class="delete"
+                onclick={() => remove(g.id, g.name)}
+                disabled={busy}
+                aria-label="Delete group"
+                title="Delete"
+              >✖</button>
             </div>
           {/if}
         </li>
@@ -166,15 +185,17 @@
     border: none;
     border-radius: 0;
   }
-  .group-row .edit {
+  .group-row .edit,
+  .group-row .delete {
     background: transparent;
     border: none;
     border-left: 1px solid var(--border);
     border-radius: 0;
     width: 48px;
-    color: var(--fg-2);
     font-size: 1.05rem;
   }
+  .group-row .edit { color: var(--fg-2); }
+  .group-row .delete { color: var(--danger); }
   .name { font-size: 1.05rem; }
   .rename-row {
     display: flex;
