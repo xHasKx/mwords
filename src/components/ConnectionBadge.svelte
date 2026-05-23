@@ -21,6 +21,10 @@
     return () => clearInterval(id);
   });
 
+  const pendingTitle = $derived(
+    `${queueStore.pendingCount} pending change${queueStore.pendingCount === 1 ? '' : 's'} waiting to be sent to the broker`,
+  );
+
   const text = $derived.by(() => {
     if (app.connection === 'reconnecting') {
       if (app.nextAttemptAt !== null) {
@@ -42,7 +46,8 @@
   <span
     class="pending"
     style:visibility={queueStore.pendingCount >= 2 ? 'visible' : 'hidden'}
-    aria-label="pending publishes"
+    aria-label={pendingTitle}
+    title={pendingTitle}
     aria-hidden={queueStore.pendingCount >= 2 ? undefined : 'true'}
   >
     {queueStore.pendingCount}

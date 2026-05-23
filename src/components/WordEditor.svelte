@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { Word } from '../lib/types.ts';
 
   type Props = {
@@ -9,9 +10,11 @@
   };
   let { initial, onSave, onDelete, onClose }: Props = $props();
 
-  let text = $state(initial ? initial.text : '');
-  let translation = $state(initial ? initial.translation : '');
-  // We deliberately capture initial values once; this dialog is re-mounted per open.
+  // Capture the initial values once at mount — this dialog is re-mounted
+  // per open, so we don't want the inputs to snap back if `initial` ever
+  // changes. `untrack` makes that explicit (and silences the lint).
+  let text = $state(untrack(() => initial?.text ?? ''));
+  let translation = $state(untrack(() => initial?.translation ?? ''));
   let busy = $state(false);
   let error = $state<string | null>(null);
 
