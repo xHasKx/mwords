@@ -201,29 +201,31 @@
     {#if createError}<div class="error">{createError}</div>{/if}
   </form>
 
-  <div class="card col port">
-    <div><strong>Import / Export</strong></div>
-    <div class="muted port-hint">
-      Export your groups and words to a JSON file, or import a file from another mwords instance. Imports merge into existing groups by name; SRS history is not preserved.
+  <details class="card port">
+    <summary><strong>Import / Export</strong></summary>
+    <div class="col port-body">
+      <div class="muted port-hint">
+        Export your groups and words to a JSON file, or import a file from another mwords instance. Imports merge into existing groups by name; SRS history is not preserved.
+      </div>
+      <div class="row">
+        <button onclick={doExport} disabled={busy || !canPort} title={portHint}>
+          Export to file
+        </button>
+        <button onclick={pickImportFile} disabled={busy || !canPort} title={portHint}>
+          Import from file
+        </button>
+      </div>
+      <input
+        bind:this={fileInput}
+        type="file"
+        accept=".json,application/json"
+        onchange={onImportFile}
+        hidden
+      />
+      {#if portStatus}<div class="muted" role="status">{portStatus}</div>{/if}
+      {#if portError}<div class="error">{portError}</div>{/if}
     </div>
-    <div class="row">
-      <button onclick={doExport} disabled={busy || !canPort} title={portHint}>
-        Export to file
-      </button>
-      <button onclick={pickImportFile} disabled={busy || !canPort} title={portHint}>
-        Import from file
-      </button>
-    </div>
-    <input
-      bind:this={fileInput}
-      type="file"
-      accept=".json,application/json"
-      onchange={onImportFile}
-      hidden
-    />
-    {#if portStatus}<div class="muted" role="status">{portStatus}</div>{/if}
-    {#if portError}<div class="error">{portError}</div>{/if}
-  </div>
+  </details>
 </div>
 
 <style>
@@ -283,4 +285,24 @@
   .row input { flex: 1; }
   .port { margin-top: 0.5rem; }
   .port-hint { font-size: 0.85rem; }
+  .port > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .port > summary::-webkit-details-marker { display: none; }
+  .port > summary::before {
+    content: '▸';
+    color: var(--fg-3);
+    width: 1em;
+    display: inline-block;
+    transition: transform 0.15s ease;
+  }
+  .port[open] > summary::before { transform: rotate(90deg); }
+  .port-body { margin-top: 0.75rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .port > summary::before { transition: none; }
+  }
 </style>
