@@ -887,6 +887,7 @@ npm run dev         # vite dev server, default http://localhost:5173
 npm run test        # vitest
 npm run check       # svelte-check + tsc --noEmit
 npm run lint        # biome check
+npm run format      # biome format --write
 npm run build       # produces dist/
 npm run preview     # serve dist/ at http://localhost:4173/mwords/
 ```

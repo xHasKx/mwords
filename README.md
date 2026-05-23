@@ -25,6 +25,7 @@ npm run dev         # vite dev server, http://localhost:5173
 npm run test        # vitest (pure SRS / queue modules)
 npm run check       # svelte-check + tsc --noEmit
 npm run lint        # biome check
+npm run format      # biome format --write
 ```
 
 For a local MQTT broker during development, point the connection form at a
