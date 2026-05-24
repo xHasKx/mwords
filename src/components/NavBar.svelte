@@ -7,25 +7,26 @@
   function switchGroup() { app.switchGroup(); }
 
   let wrapEl: HTMLDivElement | null = $state(null);
+  let dbg = $state('');
 
-  // Firefox on Android anchors position: fixed; bottom: 0 to the layout
-  // viewport, which extends past the visible bottom while the URL bar is
-  // up — the nav then floats above the visible bottom by the URL bar
-  // height. Chrome Android and iOS Safari don't have this issue.
-  //
-  // Read the actual visible-viewport bottom via the visualViewport API
-  // and lift the wrapper by the difference using transform so the
-  // compositor handles it without a layout pass (the wrapper is already
-  // promoted via will-change). On browsers where layout and visual
-  // viewports agree, the lift is 0 and this is a no-op.
+  // Firefox on Android anchors position: fixed; bottom: 0 to a layout
+  // viewport whose bottom differs from the visible-viewport bottom
+  // while the URL bar is up. Read the visible bottom via the
+  // visualViewport API and translate the wrapper by the signed delta
+  // — positive moves down, negative moves up. On browsers where the
+  // two viewports agree, the delta is 0 and this is a no-op.
   $effect(() => {
     if (typeof window === 'undefined') return;
     const vv = window.visualViewport;
     if (!vv) return;
     function sync() {
       if (!wrapEl || !vv) return;
-      const lift = Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
-      wrapEl.style.transform = `translate3d(0, -${lift}px, 0)`;
+      const ih = window.innerHeight;
+      const vt = vv.offsetTop;
+      const vh = vv.height;
+      const delta = vt + vh - ih;
+      wrapEl.style.transform = `translate3d(0, ${delta}px, 0)`;
+      dbg = `ih=${ih} vt=${Math.round(vt)} vh=${Math.round(vh)} d=${Math.round(delta)}`;
     }
     sync();
     vv.addEventListener('resize', sync);
@@ -48,6 +49,7 @@
   inflated-height bug at the top of the page.
 -->
 <div class="nav-wrap" bind:this={wrapEl}>
+  <div class="dbg">{dbg}</div>
   <nav class="nav" aria-label="Main">
     <button
       class="tab icon"
@@ -86,6 +88,17 @@
     /* transform set inline by the $effect above (translate3d for both
        compositor promotion and the Firefox-Android lift). */
     will-change: transform;
+  }
+  .dbg {
+    position: absolute;
+    left: 4px;
+    bottom: 100%;
+    font-size: 10px;
+    font-family: monospace;
+    color: yellow;
+    background: rgba(0,0,0,0.6);
+    padding: 2px 4px;
+    pointer-events: none;
   }
   .nav {
     background: var(--bg-2);
