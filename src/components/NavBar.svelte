@@ -48,6 +48,11 @@
     align-items: center;
     gap: 0.25rem;
     z-index: 40;
+    /* Promote to a GPU compositor layer so the bar isn't re-laid-out
+       on every URL-bar collapse/expand on mobile (Firefox Android in
+       particular). Reduces the visible bounce during scroll. */
+    transform: translateZ(0);
+    will-change: transform;
   }
   .tab {
     flex: 1;
