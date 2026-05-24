@@ -9,6 +9,10 @@
 
   let revealed = $state(false);
   let previousId = $state<string | undefined>(undefined);
+  // Per-session reviewed counter. Component is unmounted/remounted
+  // when the user leaves and returns to the Review view, so this
+  // resets to 0 each time the page is opened.
+  let reviewed = $state(0);
   // Chosen-word id is explicit state, not a derived. The weighted picker
   // uses Math.random; if it were a derived it would re-run on every
   // reactive ripple (post-grade publish round-trip, retained replay,
@@ -67,11 +71,13 @@
     app.grade(w.id, g);
     previousId = w.id;
     revealed = false;
+    reviewed += 1;
     bumpNow();
   }
 </script>
 
 <div class="col">
+  <div class="counter muted" aria-live="polite">Reviewed: {reviewed}</div>
   {#if app.words.size === 0}
     <div class="card muted">
       <p>No words yet in this group.</p>
@@ -89,3 +95,10 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .counter {
+    font-size: 0.85rem;
+    text-align: right;
+  }
+</style>
