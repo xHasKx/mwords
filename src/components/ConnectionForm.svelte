@@ -64,8 +64,16 @@
     return () => clearInterval(id);
   });
 
+  // 'connected' is treated as in-flight here too: between MQTT
+  // reaching 'connected' and the post-connect sync finishing (subscribe
+  // groups+settings, debounce retained replay, then transition to
+  // picker/review), the form is still mounted. Without this, the button
+  // would briefly snap from "Cancel" back to "Save & connect" before
+  // the "Loading group…" overlay takes over.
   const inFlight = $derived(
-    app.connection === 'connecting' || app.connection === 'reconnecting',
+    app.connection === 'connecting' ||
+      app.connection === 'reconnecting' ||
+      app.connection === 'connected',
   );
 
   const statusText = $derived.by(() => {
@@ -77,6 +85,7 @@
       return 'Reconnecting…';
     }
     if (app.connection === 'connecting') return 'Connecting…';
+    if (app.connection === 'connected') return 'Loading…';
     return null;
   });
 </script>
