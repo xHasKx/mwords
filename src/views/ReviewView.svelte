@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '../lib/stores/app.svelte.ts';
   import { pickNext } from '../lib/srs/picker.ts';
   import { defaultSrs } from '../lib/types.ts';
@@ -8,22 +9,44 @@
 
   let revealed = $state(false);
   let previousId = $state<string | undefined>(undefined);
-
-  const wordsArray = $derived(Array.from(app.words.values()));
+  // Chosen-word id is explicit state, not a derived. The weighted picker
+  // uses Math.random; if it were a derived it would re-run on every
+  // reactive ripple (post-grade publish round-trip, retained replay,
+  // peer sync) and a different random card would settle each time,
+  // causing the user to see one card flash and another appear.
+  let currentId = $state<string | undefined>(undefined);
   const now = $state({ ts: Date.now() / 1000 });
 
-  // Refresh `now` after each grade so the picker re-evaluates "due".
   function bumpNow() { now.ts = Date.now() / 1000; }
 
-  const current = $derived(
-    pickNext({
-      words: wordsArray,
-      srs: app.srs,
-      settings: app.settings,
-      now: now.ts,
-      previousId,
-    }),
-  );
+  // Re-pick only on events that should advance the card: initial mount,
+  // a grade (previousId changes), SRS mode flip, current word deleted,
+  // or word list arriving from empty. Updates to app.srs itself must
+  // NOT trigger a re-pick — that's the skip-a-card bug.
+  $effect(() => {
+    void app.words.size;
+    void app.settings.srsMode;
+    void previousId;
+    untrack(() => {
+      const wordsArray = Array.from(app.words.values());
+      if (wordsArray.length === 0) {
+        currentId = undefined;
+        return;
+      }
+      // Keep current if it's still valid and the user hasn't just graded.
+      if (currentId && currentId !== previousId && app.words.has(currentId)) return;
+      const picked = pickNext({
+        words: wordsArray,
+        srs: app.srs,
+        settings: app.settings,
+        now: now.ts,
+        previousId,
+      });
+      currentId = picked?.id;
+    });
+  });
+
+  const current = $derived(currentId ? (app.words.get(currentId) ?? null) : null);
 
   const front = $derived(
     current ? (app.settings.direction === 'translation' ? current.translation : current.text) : '',
@@ -49,7 +72,7 @@
 </script>
 
 <div class="col">
-  {#if wordsArray.length === 0}
+  {#if app.words.size === 0}
     <div class="card muted">
       <p>No words yet in this group.</p>
       <p>Switch to <strong>Edit</strong> below to add some.</p>
