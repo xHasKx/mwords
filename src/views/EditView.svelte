@@ -74,7 +74,7 @@
   .fab {
     position: fixed;
     right: 1.25rem;
-    bottom: calc(80px + min(env(safe-area-inset-bottom), 40px));
+    bottom: calc(80px + var(--safe-bottom));
     width: 56px; height: 56px;
     border-radius: 50%;
     font-size: 1.6rem;
