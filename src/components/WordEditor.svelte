@@ -93,7 +93,7 @@
     border-top-left-radius: 16px;
     border-top-right-radius: 16px;
     padding: 1.25rem;
-    padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(1.25rem + min(env(safe-area-inset-bottom), 40px));
     max-height: 90vh;
     overflow-y: auto;
     z-index: 100;

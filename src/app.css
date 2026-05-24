@@ -92,7 +92,7 @@ button.danger {
   max-width: 640px;
   margin: 0 auto;
   padding: 1rem;
-  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  padding-bottom: calc(72px + min(env(safe-area-inset-bottom), 40px));
   min-height: 100vh;
 }
 

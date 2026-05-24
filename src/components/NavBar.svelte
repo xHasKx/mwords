@@ -43,7 +43,7 @@
     background: var(--bg-2);
     border-top: 1px solid var(--border);
     padding: 0.4rem 0.5rem;
-    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(0.4rem + min(env(safe-area-inset-bottom), 40px));
     display: flex;
     align-items: center;
     gap: 0.25rem;
