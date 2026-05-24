@@ -39,6 +39,24 @@
     }
   }
 
+  // Save the current word but keep the modal open, with the inputs
+  // cleared and focus back on Text. Lets the user batch several adds
+  // without re-opening the editor each time. Only shown in add mode.
+  async function saveAndAddMore() {
+    busy = true;
+    error = null;
+    try {
+      await onSave(text, translation);
+      text = '';
+      translation = '';
+      textInput?.focus();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function remove() {
     if (!onDelete) return;
     if (!confirm('Delete this word?')) return;
@@ -71,6 +89,15 @@
       <button type="button" onclick={onClose}>Cancel</button>
       {#if initial && onDelete}
         <button type="button" class="danger" onclick={remove} disabled={busy}>Delete</button>
+      {/if}
+      {#if !initial}
+        <button
+          type="button"
+          onclick={saveAndAddMore}
+          disabled={busy || !text.trim() || !translation.trim()}
+        >
+          Add more
+        </button>
       {/if}
       <button type="submit" class="primary" disabled={busy || !text.trim() || !translation.trim()}>
         Save
