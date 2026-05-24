@@ -3,29 +3,31 @@
   import ConnectionForm from './components/ConnectionForm.svelte';
   import NavBar from './components/NavBar.svelte';
   import GroupPickerView from './views/GroupPickerView.svelte';
+  import DeckPickerView from './views/DeckPickerView.svelte';
   import ReviewView from './views/ReviewView.svelte';
   import EditView from './views/EditView.svelte';
   import SettingsView from './views/SettingsView.svelte';
 
   app.init();
 
+  // Nav is visible whenever the user has a "scope" to navigate within.
+  // Connect form and the group picker (post-connect landing) intentionally
+  // omit it. Deck picker shows it so the user can hop to settings without
+  // committing to a deck.
   const showNav = $derived(
-    app.view === 'review' || app.view === 'edit' || app.view === 'settings',
-  );
-  const showGroupHeader = $derived(app.view === 'review' || app.view === 'edit');
-  const groupName = $derived(
-    app.activeGroupId ? app.groups.get(app.activeGroupId)?.name ?? '' : '',
+    app.view === 'review' ||
+      app.view === 'edit' ||
+      app.view === 'settings' ||
+      app.view === 'deck-picker',
   );
 </script>
-
-{#if showGroupHeader && groupName}
-  <h1 class="group-header">{groupName}</h1>
-{/if}
 
 {#if app.view === 'connect'}
   <ConnectionForm />
 {:else if app.view === 'picker'}
   <GroupPickerView />
+{:else if app.view === 'deck-picker'}
+  <DeckPickerView />
 {:else if app.view === 'review'}
   <ReviewView />
 {:else if app.view === 'edit'}
@@ -46,15 +48,6 @@
 {/if}
 
 <style>
-  .group-header {
-    margin: 0 0 0.75rem;
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--fg-2);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .switching {
     position: fixed;
     inset: 0;

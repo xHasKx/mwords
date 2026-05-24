@@ -13,7 +13,7 @@ describe('isIntent', () => {
   });
 
   it('accepts every valid view', () => {
-    for (const v of ['connect', 'picker', 'review', 'edit', 'settings']) {
+    for (const v of ['connect', 'picker', 'deck-picker', 'review', 'edit', 'settings']) {
       expect(isIntent({ view: v })).toBe(true);
     }
   });
@@ -44,15 +44,26 @@ describe('isIntent', () => {
     expect(isIntent({ view: 'picker', modal: { kind: 'rename-group' } })).toBe(false);
   });
 
+  it('accepts rename-deck modal', () => {
+    expect(isIntent({ view: 'deck-picker', modal: { kind: 'rename-deck', deckId: 'd1' } })).toBe(
+      true,
+    );
+  });
+
+  it('rejects rename-deck modal without deckId', () => {
+    expect(isIntent({ view: 'deck-picker', modal: { kind: 'rename-deck' } })).toBe(false);
+  });
+
   it('rejects unknown modal kind', () => {
     expect(isIntent({ view: 'picker', modal: { kind: 'mystery' } })).toBe(false);
   });
 
-  it('accepts pickerReturn on picker view', () => {
+  it('accepts pickerReturn on picker and deck-picker views', () => {
     expect(isIntent({ view: 'picker', pickerReturn: 'review' })).toBe(true);
+    expect(isIntent({ view: 'deck-picker', pickerReturn: 'edit' })).toBe(true);
   });
 
-  it('rejects pickerReturn outside picker view', () => {
+  it('rejects pickerReturn outside picker views', () => {
     expect(isIntent({ view: 'review', pickerReturn: 'edit' })).toBe(false);
   });
 
@@ -91,56 +102,104 @@ describe('readIntent', () => {
 });
 
 describe('reconcileOnPop', () => {
-  const connected = { connected: true, hasActiveGroup: true };
-  const disconnected = { connected: false, hasActiveGroup: false };
-  const connectedNoGroup = { connected: true, hasActiveGroup: false };
+  const ready = { connected: true, hasActiveGroup: true, hasActiveDeck: true };
+  const disconnected = { connected: false, hasActiveGroup: false, hasActiveDeck: false };
+  const noGroup = { connected: true, hasActiveGroup: false, hasActiveDeck: false };
+  const noDeck = { connected: true, hasActiveGroup: true, hasActiveDeck: false };
 
   it('applies a connect intent regardless of connection', () => {
     expect(reconcileOnPop({ view: 'connect' }, disconnected)).toEqual({
       action: 'apply',
       intent: { view: 'connect' },
     });
-    expect(reconcileOnPop({ view: 'connect' }, connected)).toEqual({
+    expect(reconcileOnPop({ view: 'connect' }, ready)).toEqual({
       action: 'apply',
       intent: { view: 'connect' },
     });
   });
 
   it('applies picker when connected (group not required)', () => {
-    expect(reconcileOnPop({ view: 'picker' }, connectedNoGroup)).toEqual({
+    expect(reconcileOnPop({ view: 'picker' }, noGroup)).toEqual({
       action: 'apply',
       intent: { view: 'picker' },
     });
   });
 
-  it('resets picker to connect when disconnected', () => {
+  it('falls back picker to connect when disconnected', () => {
     expect(reconcileOnPop({ view: 'picker' }, disconnected)).toEqual({
-      action: 'reset-to-connect',
+      action: 'fallback',
+      intent: { view: 'connect' },
+    });
+  });
+
+  it('applies deck-picker when connected with active group', () => {
+    expect(reconcileOnPop({ view: 'deck-picker' }, ready)).toEqual({
+      action: 'apply',
+      intent: { view: 'deck-picker' },
+    });
+    expect(reconcileOnPop({ view: 'deck-picker' }, noDeck)).toEqual({
+      action: 'apply',
+      intent: { view: 'deck-picker' },
+    });
+  });
+
+  it('falls back deck-picker to picker when no active group', () => {
+    expect(reconcileOnPop({ view: 'deck-picker' }, noGroup)).toEqual({
+      action: 'fallback',
+      intent: { view: 'picker' },
+    });
+  });
+
+  it('applies settings when connected (no active deck required — settings is global)', () => {
+    expect(reconcileOnPop({ view: 'settings' }, noDeck)).toEqual({
+      action: 'apply',
+      intent: { view: 'settings' },
+    });
+  });
+
+  it('falls back settings to picker when no active group', () => {
+    expect(reconcileOnPop({ view: 'settings' }, noGroup)).toEqual({
+      action: 'fallback',
+      intent: { view: 'picker' },
     });
   });
 
   it.each([
     'review' as const,
     'edit' as const,
-    'settings' as const,
-  ])('resets %s to connect when disconnected', (view) => {
-    expect(reconcileOnPop({ view }, disconnected)).toEqual({ action: 'reset-to-connect' });
+  ])('falls back %s to connect when disconnected', (view) => {
+    expect(reconcileOnPop({ view }, disconnected)).toEqual({
+      action: 'fallback',
+      intent: { view: 'connect' },
+    });
   });
 
   it.each([
     'review' as const,
     'edit' as const,
-    'settings' as const,
-  ])('resets %s to connect when no active group', (view) => {
-    expect(reconcileOnPop({ view }, connectedNoGroup)).toEqual({ action: 'reset-to-connect' });
+  ])('falls back %s to picker when no active group', (view) => {
+    expect(reconcileOnPop({ view }, noGroup)).toEqual({
+      action: 'fallback',
+      intent: { view: 'picker' },
+    });
   });
 
-  it.each([
-    'review' as const,
-    'edit' as const,
-    'settings' as const,
-  ])('applies %s when connected with active group', (view) => {
-    expect(reconcileOnPop({ view }, connected)).toEqual({
+  it('applies review when no active deck (broad scopes — All decks / multi-select — land here)', () => {
+    expect(reconcileOnPop({ view: 'review' }, noDeck)).toEqual({
+      action: 'apply',
+      intent: { view: 'review' },
+    });
+  });
+
+  it('falls back edit to deck-picker when no active deck', () => {
+    expect(reconcileOnPop({ view: 'edit' }, noDeck)).toEqual({
+      action: 'fallback',
+      intent: { view: 'deck-picker' },
+    });
+  });
+
+  it.each(['review' as const, 'edit' as const])('applies %s when fully ready', (view) => {
+    expect(reconcileOnPop({ view }, ready)).toEqual({
       action: 'apply',
       intent: { view },
     });
@@ -152,6 +211,6 @@ describe('reconcileOnPop', () => {
       modal: { kind: 'rename-group', groupId: 'g1' },
       pickerReturn: 'review',
     };
-    expect(reconcileOnPop(intent, connected)).toEqual({ action: 'apply', intent });
+    expect(reconcileOnPop(intent, ready)).toEqual({ action: 'apply', intent });
   });
 });

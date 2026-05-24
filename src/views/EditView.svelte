@@ -32,9 +32,14 @@
 
 <div class="col">
   {#if app.activeDeckId === null}
+    <!--
+      navTo('edit') routes here through the deck picker when no deck is
+      active, so this state is normally unreachable. Kept as a safety
+      net in case state gets out of sync (e.g., the active deck was
+      tombstoned mid-session).
+    -->
     <div class="card muted">
-      <p>No active deck.</p>
-      <p>Pick or create a deck before editing. (Deck picker UI lands in slice 3.)</p>
+      <p>No active deck. Use Switch deck below to pick or create one.</p>
     </div>
   {:else if words.length === 0}
     <div class="card muted">No words yet. Tap + to add one.</div>

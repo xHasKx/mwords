@@ -146,7 +146,7 @@
 <div class="col">
   <div class="head">
     {#if app.pickerReturn !== null}
-      <button class="back" onclick={() => app.cancelSwitchGroup()} aria-label="Back" title="Back">←</button>
+      <button class="back" onclick={() => app.goBack()} aria-label="Back" title="Back">←</button>
     {/if}
     <h1>Pick a group</h1>
   </div>

@@ -108,6 +108,16 @@ class AppStore {
     return out;
   }
 
+  // Reactive-friendly per-deck word count. Iterates the live `words`
+  // SvelteMap so a derived caller re-runs on additions / deletions.
+  wordCountInDeck(deckId: string): number {
+    let n = 0;
+    for (const w of this.words.values()) {
+      if (this.wordDeck.get(w.id) === deckId) n += 1;
+    }
+    return n;
+  }
+
   view = $state<View>('connect');
   switching = $state(false);
   // When the picker is opened via the nav-bar "switch group" affordance,
@@ -189,7 +199,10 @@ class AppStore {
   private applyIntent(next: Intent): void {
     this.view = next.view;
     this.modal = next.modal ?? null;
-    this.pickerReturn = next.view === 'picker' ? (next.pickerReturn ?? null) : null;
+    // pickerReturn carries through both legs of the picker chain
+    // (group picker → deck picker → final destination).
+    this.pickerReturn =
+      next.view === 'picker' || next.view === 'deck-picker' ? (next.pickerReturn ?? null) : null;
   }
 
   private installHistoryListener(): void {
@@ -210,9 +223,10 @@ class AppStore {
     const r = reconcileOnPop(popped, {
       connected: this.connection === 'connected',
       hasActiveGroup: this.activeGroupId !== null,
+      hasActiveDeck: this.activeDeckId !== null,
     });
-    if (r.action === 'reset-to-connect') {
-      this.replaceIntent({ view: 'connect' });
+    if (r.action === 'fallback') {
+      this.replaceIntent(r.intent);
       return;
     }
     this.applyIntent(r.intent);
@@ -220,8 +234,23 @@ class AppStore {
 
   // Convenience helpers used by views/components. Each one is a single
   // pushIntent call, but giving them names keeps call sites self-documenting.
+  //
+  // navTo intercepts the Edit tab when no deck is active — the user has
+  // to pick one before the editor can target a topic. Settings is
+  // global and works without an active deck; Review degrades gracefully
+  // when scope is broad.
   navTo(v: 'review' | 'edit' | 'settings'): void {
     if (this.view === v && this.modal === null) return;
+    if (v === 'edit' && this.activeDeckId === null) {
+      this.pushIntent({ view: 'deck-picker', pickerReturn: 'edit' });
+      return;
+    }
+    // Entering Edit with a broader review scope narrows back to active-deck
+    // silently (Edit always operates on one deck).
+    if (v === 'edit' && this.reviewScope.kind !== 'active-deck') {
+      this.reviewScope = { kind: 'active-deck' };
+      creds.update({ lastReviewScope: { kind: 'active-deck' } });
+    }
     this.pushIntent({ view: v });
   }
 
@@ -233,6 +262,14 @@ class AppStore {
     this.pushIntent({
       view: 'picker',
       modal: { kind: 'rename-group', groupId },
+      pickerReturn: this.pickerReturn ?? undefined,
+    });
+  }
+
+  openRenameDeck(deckId: string): void {
+    this.pushIntent({
+      view: 'deck-picker',
+      modal: { kind: 'rename-deck', deckId },
       pickerReturn: this.pickerReturn ?? undefined,
     });
   }
@@ -686,11 +723,26 @@ class AppStore {
     }
   }
 
+  // Called from the deck picker when the user taps a deck row. Sets
+  // active deck, narrows scope, persists, and advances to `pickerReturn`
+  // (or Review by default). Replace rather than push so back from the
+  // destination view walks past the picker.
   selectDeck(id: string): void {
     if (!this.decks.has(id)) return;
     this.activeDeckId = id;
     this.reviewScope = { kind: 'active-deck' };
     creds.update({ lastDeck: id, lastReviewScope: { kind: 'active-deck' } });
+    const onward = this.pickerReturn ?? 'review';
+    this.replaceIntent({ view: onward });
+  }
+
+  // Called from the deck picker's "All decks" row and its
+  // "Review selected (N)" multi-select CTA. Both target Review
+  // regardless of pickerReturn (Edit isn't meaningful for a broad
+  // scope; Settings is reachable directly from the nav bar).
+  selectScopeAndReview(scope: ReviewScope): void {
+    this.setReviewScope(scope);
+    this.replaceIntent({ view: 'review' });
   }
 
   setReviewScope(scope: ReviewScope): void {
@@ -919,19 +971,45 @@ class AppStore {
       // Else: offline — defer the subscribe. afterConnect on the next
       // successful connect will subscribe phase-2 for activeGroupId.
       //
-      // From the picker (initial pick or switch-group), replace — the
-      // picker entry served its purpose, and back from review should
-      // walk past it. From the connect form (autoconnect with a
-      // resolved lastGroup), push — so back from review returns to
-      // the connect form per the design's "connect form poppable" rule.
+      // Mid-await popstate guard. If a back/forward press fired while
+      // we were awaiting unsubscribe/subscribe, `this.view` has moved
+      // off the entry view. The store mutations above (activeGroupId,
+      // subscriptions) already happened — we accept that drift — but
+      // we must NOT force the destination intent on top of whatever
+      // the user navigated to. Skip the push/replace; the user lands
+      // wherever they back-pressed to and can re-enter normally.
+      if (this.view !== entryView) return;
+
+      // Pick a destination view:
+      //   - With an active deck, head to the caller's `pickerReturn` if
+      //     one was set (the user came via switch-deck → up-arrow →
+      //     pick-group), otherwise Review.
+      //   - Without an active deck, fall to the deck picker. Carry
+      //     `pickerReturn` forward so the user lands where they meant
+      //     to once they pick a deck.
+      //   - From the connect form (autoconnect with a resolved
+      //     lastGroup), push instead of replace so back returns to the
+      //     connect form per the "connect form poppable" rule.
+      const onward = this.pickerReturn;
+      const dest: Intent =
+        this.activeDeckId !== null
+          ? { view: onward ?? 'review' }
+          : { view: 'deck-picker', pickerReturn: onward ?? undefined };
       if (entryView === 'connect') {
-        this.pushIntent({ view: 'review' });
+        this.pushIntent(dest);
       } else {
-        this.replaceIntent({ view: 'review' });
+        this.replaceIntent(dest);
       }
     } finally {
       this.switching = false;
     }
+  }
+
+  // Tapping the up-arrow in the deck picker pushes the group picker.
+  // pickerReturn is preserved so picking a group → that group's deck
+  // picker → pick-or-broaden → final destination stays the chain.
+  openGroupPickerFromDeckPicker(): void {
+    this.replaceIntent({ view: 'picker', pickerReturn: this.pickerReturn ?? undefined });
   }
 
   // After SUBACK + debounce, the decks store reflects retained replay.
@@ -957,16 +1035,12 @@ class AppStore {
     }
   }
 
-  switchGroup(): void {
+  // Nav-bar "Switch deck" entry point. The deck picker is the primary
+  // step; users reach the group picker from there via the up-arrow.
+  switchDeck(): void {
     const from = this.view;
     if (from !== 'review' && from !== 'edit' && from !== 'settings') return;
-    this.pushIntent({ view: 'picker', pickerReturn: from });
-  }
-
-  cancelSwitchGroup(): void {
-    if (this.pickerReturn === null) return;
-    // popstate does the actual state change.
-    this.goBack();
+    this.pushIntent({ view: 'deck-picker', pickerReturn: from });
   }
 
   async addWord(text: string, translation: string): Promise<void> {
