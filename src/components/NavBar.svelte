@@ -5,6 +5,36 @@
   type View = 'review' | 'edit' | 'settings';
   function go(v: View) { app.navTo(v); }
   function switchGroup() { app.switchGroup(); }
+
+  let wrapEl: HTMLDivElement | null = $state(null);
+
+  // Firefox on Android anchors position: fixed; bottom: 0 to the layout
+  // viewport, which extends past the visible bottom while the URL bar is
+  // up — the nav then floats above the visible bottom by the URL bar
+  // height. Chrome Android and iOS Safari don't have this issue.
+  //
+  // Read the actual visible-viewport bottom via the visualViewport API
+  // and lift the wrapper by the difference using transform so the
+  // compositor handles it without a layout pass (the wrapper is already
+  // promoted via will-change). On browsers where layout and visual
+  // viewports agree, the lift is 0 and this is a no-op.
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    function sync() {
+      if (!wrapEl || !vv) return;
+      const lift = Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
+      wrapEl.style.transform = `translate3d(0, -${lift}px, 0)`;
+    }
+    sync();
+    vv.addEventListener('resize', sync);
+    vv.addEventListener('scroll', sync);
+    return () => {
+      vv.removeEventListener('resize', sync);
+      vv.removeEventListener('scroll', sync);
+    };
+  });
 </script>
 
 <!--
@@ -17,7 +47,7 @@
   how the browser computes that env value and re-introduces the
   inflated-height bug at the top of the page.
 -->
-<div class="nav-wrap">
+<div class="nav-wrap" bind:this={wrapEl}>
   <nav class="nav" aria-label="Main">
     <button
       class="tab icon"
@@ -53,7 +83,8 @@
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 40;
-    transform: translateZ(0);
+    /* transform set inline by the $effect above (translate3d for both
+       compositor promotion and the Firefox-Android lift). */
     will-change: transform;
   }
   .nav {
