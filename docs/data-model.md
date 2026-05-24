@@ -11,7 +11,7 @@ should `JSON.parse` + validate against them before publishing to stores.
 
 ## IDs
 
-Every persistent entity — group, word, SRS state — is identified by an
+Every persistent entity — group, deck, word, SRS state — is identified by an
 **epoch-milliseconds timestamp at creation, stringified**:
 
 ```ts
@@ -31,7 +31,7 @@ record.created = tmNow / 1000;         // seconds, number — for the payload
 record.updated = tmNow / 1000;
 ```
 
-So for `Group` and `Word`, `record.created === Number(record.id) / 1000`
+So for `Group`, `Deck`, and `Word`, `record.created === Number(record.id) / 1000`
 at creation. Subsequent `updated` bumps use `Date.now() / 1000`.
 (`SrsState` has no `created` field; `Settings` has neither `id` nor
 `created`.)
@@ -44,34 +44,45 @@ IDs:
   topic boundaries (topic levels are strings anyway) and keeps the type
   uniform across all uses.
 - live in the **topic suffix** *and* are mirrored into the payload as an
-  `id` field for `Group`, `Word`, and `SrsState`, so an in-memory record
-  is self-contained (the picker, the SRS engine, and `compareWords` can
-  use the record directly without threading the topic alongside it).
+  `id` field for `Group`, `Deck`, `Word`, and `SrsState`, so an in-memory
+  record is self-contained (the picker, the SRS engine, and `compareWords`
+  can use the record directly without threading the topic alongside it).
   `Settings` has no id (singleton topic).
+- a deck `id` does **not** encode its parent group; the parent is the
+  topic location (the `<G>` segment between `g/` and `d/`). Same for
+  words and SRS state — their topic encodes the deck and group; the
+  payload only carries the leaf `id`.
 - on a single client, collisions are essentially impossible (creation is
   user-driven, not loop-driven). Across two clients creating two records in
   the same millisecond, the broker's last-publish-wins on retained semantics
   resolves it — and these are different topics anyway (one per id).
 
-## Topic prefix and groups
+## Topic prefix, groups, and decks
 
-Every topic lives under a **base prefix**, with two namespaces underneath:
-a literal `g/` segment holding **groups** (decks), and a global `settings`
-topic shared across all groups.
+Every topic lives under a **base prefix**, with three nested namespaces:
+groups (literal `g/`), decks inside each group (literal `d/`), and a
+global `settings` topic shared across the whole prefix.
 
 - The **base prefix** is a connection-level setting stored in `localStorage`,
   default `mwords`. It namespaces this app on a broker that might host other
   things; for a private broker the default is fine.
-- A **group** is the user-facing unit of organisation — roughly a "deck" in
-  Anki terms ("German A1", "Spanish verbs", "Chemistry"). Group topics live
-  under `<P>/g/<G>` where `<G>` is the group's numeric-string id.
-- **Settings are global**, not per-group: SRS mode, direction, etc. live at
-  `<P>/settings` and apply across every group.
+- A **group** is the top-level container — a *language* or *project*
+  ("German", "Spanish", "Chemistry"). Group markers live at `<P>/g/<G>`
+  where `<G>` is the group's numeric-string id.
+- A **deck** is a leaf container of words inside a group — the
+  Anki-deck equivalent ("A1 Verbs", "Food", "Lesson 3"). Deck markers
+  live at `<P>/g/<G>/d/<D>` where `<D>` is the deck's numeric-string
+  id; words and SRS records live under `<P>/g/<G>/d/<D>/...`.
+- **Settings are global**, not per-group or per-deck: SRS mode,
+  direction, etc. live at `<P>/settings` and apply across the entire
+  prefix.
 
-The `g/` literal segment leaves room to add sibling namespaces later
-(`<P>/users/<U>`, `<P>/imports/...`) without colliding with group ids.
+The `g/` and `d/` literal segments leave room for sibling namespaces
+later (`<P>/users/<U>`, `<P>/g/<G>/imports/...`) without colliding with
+ids.
 
-Below, `<P>` denotes the base prefix and `<G>` denotes the active group's id.
+Below, `<P>` denotes the base prefix, `<G>` the active group's id, and
+`<D>` the active deck's id.
 
 ### Group registry
 
@@ -85,35 +96,59 @@ The client discovers groups by subscribing to `<P>/g/+` (single-level
 wildcard) and reading the retained payloads. Creating a group means
 publishing a `Group` to `<P>/g/<G>` with `retain: true`, where `<G>`
 is a freshly-allocated `Date.now().toString()`. Tombstone publish (zero-byte,
-retain) removes it — but group deletion is **out of scope for v1**.
+retain) removes it; see [`design.md`](./design.md) → "Group deletion".
 
 **Strict discovery.** A group is visible only if `<P>/g/<G>` itself is
-published. Words or SRS records under a group whose root marker is missing
-are "orphans" and won't appear in the picker.
+published. Decks, words, or SRS records under a group whose root
+marker is missing are "orphans" and won't appear in any picker.
 
-### Group names (display only)
+### Deck registry
 
-Since `<G>` is now a numeric id, **the group name is purely a payload field**
-and carries no topic-routing constraints:
+Each deck inside a group is announced by a retained marker at its root topic:
+
+```
+<P>/g/<G>/d/<D>    →   Deck JSON
+```
+
+For the active group, the client discovers decks by subscribing to
+`<P>/g/<G>/d/+` and reading the retained payloads. Creating a deck means
+publishing a `Deck` to `<P>/g/<G>/d/<D>` with `retain: true`, where
+`<D>` is a freshly-allocated `Date.now().toString()` (independent of any
+group id). Tombstone publish removes it; see [`design.md`](./design.md)
+→ "Deck deletion".
+
+**Strict discovery extends one level deeper.** A deck is visible only
+if both `<P>/g/<G>` and `<P>/g/<G>/d/<D>` are published. Words and SRS
+records under a deck whose marker is missing are orphans.
+
+### Group and deck names (display only)
+
+Since `<G>` and `<D>` are numeric ids, **group and deck names are purely
+payload fields** and carry no topic-routing constraints:
 
 - Length: `1 <= name.length <= 256` after trim (a generous upper cap;
   empty / whitespace-only names rejected by the UI and validator).
 - **Any characters allowed**, including `/`, `+`, `#`, spaces, emoji,
   newlines (the last is discouraged but not blocked) — none of them appear
-  in topic strings anymore.
+  in topic strings.
 - **Leading/trailing whitespace is trimmed** on input before publishing.
-- **Renaming is supported** — just re-publish the `Group` to the same
-  `<P>/g/<G>` topic with the new `name`. The id stays put, so words and
-  SRS records under the group are unaffected.
+- **Renaming is supported** — re-publish the `Group` or `Deck` to the
+  same topic with the new `name`. The id stays put, so children
+  (decks under a renamed group; words / SRS under a renamed deck) are
+  unaffected.
+- Names are **not unique** across siblings — two decks in the same
+  group may share a name; the picker shows both. Uniqueness is by
+  `id`, not by name.
 
 ## Topics
 
-| Topic                       | Retained | QoS | Payload         | Purpose                                                  |
-|-----------------------------|----------|-----|-----------------|----------------------------------------------------------|
-| `<P>/settings`              | yes      | 1   | `Settings` JSON | **Global** preferences (SRS mode, direction, …).         |
-| `<P>/g/<G>`                 | yes      | 1   | `Group`         | Group registry marker. Listed by the picker.             |
-| `<P>/g/<G>/words/<id>`      | yes      | 1   | `Word` JSON     | One word's definition. `<id>` is the word's creation ts. |
-| `<P>/g/<G>/srs/<id>`        | yes      | 1   | `SrsState` JSON | Per-word scheduling state. `<id>` matches the word's id. |
+| Topic                            | Retained | QoS | Payload         | Purpose                                                  |
+|----------------------------------|----------|-----|-----------------|----------------------------------------------------------|
+| `<P>/settings`                   | yes      | 1   | `Settings` JSON | **Global** preferences (SRS mode, direction, …).         |
+| `<P>/g/<G>`                      | yes      | 1   | `Group`         | Group registry marker. Listed by the group picker.       |
+| `<P>/g/<G>/d/<D>`                | yes      | 1   | `Deck`          | Deck registry marker. Listed by the deck picker.         |
+| `<P>/g/<G>/d/<D>/words/<id>`     | yes      | 1   | `Word` JSON     | One word's definition. `<id>` is the word's creation ts. |
+| `<P>/g/<G>/d/<D>/srs/<id>`       | yes      | 1   | `SrsState` JSON | Per-word scheduling state. `<id>` matches the word's id. |
 
 ### Subscription pattern (two phases)
 
@@ -137,13 +172,23 @@ and so that settings changes from other devices propagate immediately.
 **Phase 2 — group-scoped** (after the user picks/creates a group `<G>`):
 
 ```
-<P>/g/<G>/words/+
-<P>/g/<G>/srs/+
+<P>/g/<G>/d/+
+<P>/g/<G>/d/+/words/+
+<P>/g/<G>/d/+/srs/+
 ```
 
-Wait for SUBACK + debounce → app is "synced" for this group. Switching
-groups unsubscribes these two filters and resubscribes for the new group.
-The global subscriptions from phase 1 are untouched.
+Wait for SUBACK + debounce → app is "synced" for this group. The
+single `+` wildcard at the deck level loads every deck's words and SRS
+state in one go; switching decks **within** a group is then an
+in-memory filter change, with no further SUBSCRIBE / UNSUBSCRIBE
+round-trip. Switching to a different *group* unsubscribes all three
+filters and resubscribes for the new group's `<G>`. The global
+subscriptions from phase 1 are untouched.
+
+This loads more retained data than a strict per-deck subscribe would,
+but the trade is intentional: multi-deck and whole-group review modes
+(see [`design.md`](./design.md) → "Review scope") become pure
+in-memory operations, and per-deck switching feels instant.
 
 ### Deletion of a word
 
@@ -152,30 +197,34 @@ message at a topic. We use this for word deletion, routed through the
 PublishQueue:
 
 ```ts
-await queue.publishTombstone(`${prefix}/g/${groupId}/words/${id}`);
-await queue.publishTombstone(`${prefix}/g/${groupId}/srs/${id}`);
+await queue.publishTombstone(`${prefix}/g/${groupId}/d/${deckId}/words/${id}`);
+await queue.publishTombstone(`${prefix}/g/${groupId}/d/${deckId}/srs/${id}`);
 ```
 
 The store treats zero-byte messages as "tombstones" and removes the entry.
 
-**Group deletion is out of scope for v1.** When we add it later, the
-mechanic is the same — tombstone `<P>/g/<G>` plus every child topic — and
-the UI will gate it behind explicit confirmation given the publish volume.
+**Group and deck deletion** use the same mechanic — tombstone the
+marker plus every child topic. See [`design.md`](./design.md) →
+"Group deletion" / "Deck deletion" for the wildcard-subtree publish
+shape used on flespi-class brokers (`<P>/g/<G>/#` and
+`<P>/g/<G>/d/<D>/#`).
 
 ## Payload schemas
 
-Payloads are deliberately minimal: no version numbers. `Group`, `Word`,
-and `SrsState` mirror their id into the payload (`id` field, equal to the
-topic suffix) so an in-memory record is self-contained. `Settings` omits
-it (singleton topic).
+Payloads are deliberately minimal: no version numbers. `Group`, `Deck`,
+`Word`, and `SrsState` mirror their id into the payload (`id` field,
+equal to the topic suffix) so an in-memory record is self-contained.
+`Settings` omits it (singleton topic). None of the records encode their
+parent — the topic is the address, and the store synthesizes the
+parent relationship from the parsed topic on receive.
 
-`Group` and `Word` carry `created` and `updated` timestamps to support
-"last modified" UI and recency sorting. `Settings` and `SrsState` carry
-only `updated` (no `created`). All four types use `updated` uniformly,
-which is also what drives the LWW gate on incoming retained messages
-(see [`design.md`](./design.md) → Application lifecycle step 9). All
-numeric timestamps are **Unix epoch seconds** (fractional, ms-precision
-preserved — `Date.now() / 1000`).
+`Group`, `Deck`, and `Word` carry `created` and `updated` timestamps to
+support "last modified" UI and recency sorting. `Settings` and
+`SrsState` carry only `updated` (no `created`). All five types use
+`updated` uniformly, which is also what drives the LWW gate on incoming
+retained messages (see [`design.md`](./design.md) → Application
+lifecycle step 9). All numeric timestamps are **Unix epoch seconds**
+(fractional, ms-precision preserved — `Date.now() / 1000`).
 
 The source of truth is the broker. Retained-topic semantics give us
 last-publish-wins at the broker layer — whichever publish lands last
@@ -202,7 +251,25 @@ Example:
 Renaming = publish a `Group` to the same topic with a different `name`,
 the same `id` and `created`, and a fresh `updated` (`Date.now() / 1000`).
 
-### `Word` — `<P>/g/<G>/words/<id>`
+### `Deck` — `<P>/g/<G>/d/<D>`
+
+```ts
+type Deck = {
+  id: string;              // numeric string (ms); equals the topic suffix <D>
+  name: string;            // up to 256 Unicode chars, trimmed of edge whitespace
+  created: number;         // epoch seconds; equals Number(id) / 1000 at creation
+  updated: number;         // epoch seconds; bumped on every publish (incl. rename)
+};
+```
+
+Example:
+`{ "id": "1716285234890", "name": "A1 Verbs", "created": 1716285234.890, "updated": 1716285234.890 }`
+
+Identical shape to `Group`. The parent group is the topic location
+(`<G>`), not a payload field. Renaming = re-publish to the same topic
+with a new `name`, the same `id` and `created`, and a fresh `updated`.
+
+### `Word` — `<P>/g/<G>/d/<D>/words/<id>`
 
 ```ts
 type Word = {
@@ -216,9 +283,9 @@ type Word = {
 
 A word has just `text` and `translation` as user-visible content — no
 tags, no notes. SRS state lives in its own topic (joined client-side by
-matching the `id` to the topic suffix `<P>/g/<G>/srs/<id>`).
+matching the `id` to the topic suffix `<P>/g/<G>/d/<D>/srs/<id>`).
 
-### `SrsState` — `<P>/g/<G>/srs/<id>`
+### `SrsState` — `<P>/g/<G>/d/<D>/srs/<id>`
 
 Per-card scheduling state. The `id` (and the topic suffix) matches the
 related word's id, so a word and its SRS state are joined client-side by
@@ -302,7 +369,7 @@ Exactly **one** key:
 
 | Key                | Value (JSON-encoded)                                                          |
 |--------------------|-------------------------------------------------------------------------------|
-| `mwords:connection`| `{ url, username, password, prefix, lastGroup?, autoconnect? }`               |
+| `mwords:connection`| `{ url, username, password, prefix, lastGroup?, lastDeck?, lastReviewScope?, autoconnect? }` |
 
 ```ts
 type StoredConnection = {
@@ -314,6 +381,19 @@ type StoredConnection = {
                            // no `/`, `+`, `#`, null byte, or whitespace.
   lastGroup?: string;      // optional: id of the most-recently active group
                            // (a numeric string like "1716285234567")
+  lastDeck?: string;       // optional: id of the most-recently active deck.
+                           // Single id, NOT per-group — on boot we sanity-
+                           // check it resolves to a deck inside `lastGroup`
+                           // and drop it if not. Cleared when the user
+                           // switches groups.
+  lastReviewScope?:        // optional: persisted Review scope. Restored on
+                           // boot when `lastDeck` resolves. Defaults to
+                           // `{ kind: 'active-deck' }` if absent. See
+                           // design.md → "Review scope" for the in-memory
+                           // shape (identical here).
+    | { kind: 'active-deck' }
+    | { kind: 'decks'; deckIds: string[] }
+    | { kind: 'group' };
   autoconnect?: boolean;   // when true, boot skips the connect form and
                            // calls connect() immediately. Set by the form's
                            // Autoconnect checkbox; cleared by Settings →
@@ -325,10 +405,24 @@ type StoredConnection = {
 - `prefix` defaults to `"mwords"`. The connection form lets the user override
   it; see the inline rules in `StoredConnection.prefix` above.
 - `lastGroup` is a UX convenience: on boot, if it resolves to a group id
-  that's still present in the discovered registry, we skip the picker. If
-  not (e.g., the group was deleted on another device, or this is a fresh
-  install), we show the picker. There's also a manual "switch group"
-  affordance so the user is never trapped in one group.
+  that's still present in the discovered registry, we skip the group
+  picker. If not (e.g., the group was deleted on another device, or this
+  is a fresh install), we show the group picker.
+- `lastDeck` is the next UX convenience down: on boot, after `lastGroup`
+  resolves, we check that `lastDeck` resolves to a deck inside that
+  group. If yes, restore it as the active deck and skip the deck picker
+  too (landing the user back in Review/Edit). If no, drop `lastDeck`
+  and show the deck picker. When the user switches groups via the
+  picker, `lastDeck` is cleared in the same write that updates
+  `lastGroup`.
+- `lastReviewScope` is restored alongside `lastDeck`. Multi-deck
+  selections (`{ kind: 'decks', deckIds }`) are filtered on restore to
+  only include deck ids still present in the active group — if the
+  filtered list is empty, the scope falls back to
+  `{ kind: 'active-deck' }`.
+- A "switch deck" affordance from the nav bar reaches the deck picker
+  at any time; from the deck picker, an up-arrow reaches the group
+  picker.
 - `autoconnect` defaults to false. Each Save & connect submission writes
   whatever the checkbox shows; each Settings → Disconnect resets it to
   false. The intent is "this connection is durable enough that I want it
@@ -386,31 +480,48 @@ await queue.publishIntent(`${prefix}/g/${existing.id}`,
   { id: existing.id, name: newTrimmedName,
     created: existing.created, updated: Date.now() / 1000 } satisfies Group);
 
-// Add a new word (same id-and-timestamps pattern as group create)
+// Create a new deck inside a group (identical id/timestamps pattern)
+const tmDeck = Date.now();
+const deckId = tmDeck.toString();
+const tsDeck = tmDeck / 1000;
+await queue.publishIntent(`${prefix}/g/${groupId}/d/${deckId}`,
+  { id: deckId, name: trimmedDeckName, created: tsDeck, updated: tsDeck } satisfies Deck);
+
+// Rename a deck (re-publish to the same topic)
+await queue.publishIntent(`${prefix}/g/${groupId}/d/${existingDeck.id}`,
+  { id: existingDeck.id, name: newTrimmedName,
+    created: existingDeck.created, updated: Date.now() / 1000 } satisfies Deck);
+
+// Add a new word (lives under the active deck)
 const tmWord = Date.now();
 const wordId = tmWord.toString();
 const tsWord = tmWord / 1000;
-await queue.publishIntent(`${prefix}/g/${groupId}/words/${wordId}`,
+await queue.publishIntent(`${prefix}/g/${groupId}/d/${deckId}/words/${wordId}`,
   { id: wordId, text, translation, created: tsWord, updated: tsWord } satisfies Word);
 
 // Update an existing word (same topic; broker overwrites retained)
-await queue.publishIntent(`${prefix}/g/${groupId}/words/${word.id}`,
+await queue.publishIntent(`${prefix}/g/${groupId}/d/${deckId}/words/${word.id}`,
   { id: word.id, text: newText, translation: newTranslation,
     created: word.created, updated: Date.now() / 1000 } satisfies Word);
 
 // Record a review result. Non-commit action — fire and forget; no `await`.
 // See design.md → Application lifecycle step 8.
 const newSrs = sm2.transition(currentSrs, grade, Date.now() / 1000);
-queue.publishIntent(`${prefix}/g/${groupId}/srs/${word.id}`, newSrs);
+queue.publishIntent(`${prefix}/g/${groupId}/d/${deckId}/srs/${word.id}`, newSrs);
 
 // Change a global setting
 await queue.publishIntent(`${prefix}/settings`,
   { ...settings, srsMode: 'weighted-random', updated: Date.now() / 1000 } satisfies Settings);
 
 // Delete a word
-await queue.publishTombstone(`${prefix}/g/${groupId}/words/${wordId}`);
-await queue.publishTombstone(`${prefix}/g/${groupId}/srs/${wordId}`);
+await queue.publishTombstone(`${prefix}/g/${groupId}/d/${deckId}/words/${wordId}`);
+await queue.publishTombstone(`${prefix}/g/${groupId}/d/${deckId}/srs/${wordId}`);
 ```
+
+Words and SRS records live under the deck whose `<D>` segment is in
+their topic. A word is **never moved between decks** in v1 — moving
+would require a tombstone + re-create with a new id (and would reset
+its SRS state). Out of scope.
 
 ## Validation
 
@@ -431,14 +542,18 @@ place:
   payload.
 - `JSON.parse` (catch syntax errors → log and drop).
 - Type-narrow with hand-written guards: `isGroup(x, topicId): x is Group`,
-  `isWord(x, topicId): x is Word`, `isSrsState(x, topicId): x is SrsState`,
-  `isSettings(x): x is Settings`. No `zod`/`valibot` in v1 — the schemas
-  are small and the validators are <30 lines each.
-- **Topic/payload id consistency.** For `Group`, `Word`, and `SrsState`,
-  `payload.id` **must equal** the topic suffix; if it doesn't, drop the
-  message with a warning that includes both values. (Mismatches indicate
-  a hand-publish error or a misbehaving client — trusting the wrong id
-  would let a payload effectively hijack the wrong topic.)
+  `isDeck(x, topicId): x is Deck`, `isWord(x, topicId): x is Word`,
+  `isSrsState(x, topicId): x is SrsState`, `isSettings(x): x is Settings`.
+  No `zod`/`valibot` in v1 — the schemas are small and the validators are
+  <30 lines each.
+- **Topic/payload id consistency.** For `Group`, `Deck`, `Word`, and
+  `SrsState`, `payload.id` **must equal** the topic suffix; if it
+  doesn't, drop the message with a warning that includes both values.
+  (Mismatches indicate a hand-publish error or a misbehaving client —
+  trusting the wrong id would let a payload effectively hijack the
+  wrong topic.) The validator does **not** cross-check the `<G>` or
+  `<D>` segments — they're addressed by the topic parser, not echoed
+  in the payload.
 - **Range checks (closed list).** Beyond `JSON.parse` + type guards,
   the validator applies range checks **only** to the fields listed
   here; every other numeric / string field is accepted as-is once it
@@ -446,10 +561,11 @@ place:
   - `updated`, on every payload type, must be a finite non-negative
     number. (The `0` sentinel used by in-memory `SrsState` defaults
     is acceptable; such records are never published.)
-  - `created`, on `Group` and `Word`, must be a finite non-negative
-    number with `created <= updated`.
-  - `Group.name` is trimmed of edge whitespace and must satisfy
-    `1 <= name.length <= 256` after trim (empty names rejected).
+  - `created`, on `Group`, `Deck`, and `Word`, must be a finite
+    non-negative number with `created <= updated`.
+  - `Group.name` and `Deck.name` are trimmed of edge whitespace and
+    must satisfy `1 <= name.length <= 256` after trim (empty names
+    rejected).
   - No upper bound against `Date.now()` — clock skew between devices
     would otherwise cause valid messages to be dropped.
 
@@ -460,6 +576,13 @@ place:
   weird-but-typed value (`ease = 0.1`, `text = ""`) is a single odd
   card, not a corrupted store — so we don't pay the validator-surface
   cost of constraining them further.
+- **Topic parsing.** `lib/mqtt/topics.ts` recognises five shapes:
+  `<P>/settings`, `<P>/g/<G>`, `<P>/g/<G>/d/<D>`,
+  `<P>/g/<G>/d/<D>/words/<id>`, `<P>/g/<G>/d/<D>/srs/<id>`. Anything
+  else (including the old v1 `<P>/g/<G>/words/<id>` shape) is dropped
+  silently. There is no compatibility shim — old-shape data on the
+  broker is invisible to v2 (see [`design.md`](./design.md) →
+  "Migration").
 - On validation failure: log the topic + payload, drop the message,
   surface a toast in dev mode only.
 

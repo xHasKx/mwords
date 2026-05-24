@@ -8,14 +8,22 @@ broker connection info.
 
 - **Frontend-only.** Runs on `localhost` during dev and on GitHub Pages in production.
   No backend service of our own — the MQTT broker plays the role of the data store.
-- **Groups (decks).** Words are organised into named groups — one connection
-  to a broker can host many of them ("German A1", "Spanish verbs", …). Groups
-  are discovered from the broker on connect; the user picks one or creates
-  a new one before reviewing/editing.
+- **Two-level organisation: groups and decks.** A **group** is the
+  top-level container — a *language* or *project* ("German", "Spanish",
+  "Chemistry"). A **deck** is a leaf container of words inside a group
+  ("A1 Verbs", "Food", "Lesson 3"). One broker prefix can host many
+  groups, each containing many decks. Groups and decks are both
+  discovered from the broker on connect; the user picks a group, then
+  a deck (or "all decks" for whole-group review) before reviewing /
+  editing.
 - **Two modes.**
-  - **Review** — show a word, hide its translation, let the user grade recall
-    (`Again` / `Hard` / `Good` / `Easy`).
-  - **Edit** — list, add, edit, and delete words.
+  - **Review** — show a word, hide its translation, let the user grade
+    recall (`Again` / `Hard` / `Good` / `Easy`). Review scope is
+    selectable: just the active deck, a subset of decks, or every deck
+    in the active group.
+  - **Edit** — list, add, edit, and delete words. Always scoped to one
+    deck at a time (broad review scopes silently narrow to the active
+    deck on entering Edit).
 - **Three scheduling algorithms**, selectable from settings:
   - **SM-2** (default) — classic spaced-repetition.
   - **Weighted random** — pick any word, weighted by recent difficulty. No due dates.
@@ -65,6 +73,49 @@ before the next is started.
 Slices 1–2 give a usable single-device app. Slice 3 makes it
 multi-device-safe. Slice 4 closes the rare races. Don't try to land
 4 before 1–3 are running.
+
+### v2 build order — Group/Deck split
+
+The v1 build above describes a single-level group model. v2 introduces
+a two-level group/deck hierarchy (see [data-model.md](./data-model.md)).
+**No migration — v2 ignores anything not at the new topic shape.** Use
+a fresh prefix (e.g. `mwords-v2-test`) during development so v1 and v2
+retained state don't share a namespace; the user re-imports content
+from scratch via Export / Import once v2 is live.
+
+0. **Docs.** Update `data-model.md` and `design.md` to describe the
+   new end state — schemas, topic layout, lifecycle, deck picker,
+   review scope, Intent additions, localStorage extensions. (This
+   slice.) `srs.md` needs no change — the schedulers are
+   deck-agnostic and operate on whatever `Word[]` the store hands
+   them.
+1. **Types, topic builders, validator.** Add `Deck` to
+   `lib/types.ts`; rewrite `lib/mqtt/topics.ts` to build / parse the
+   new five-shape topic set; add `isDeck` and update the topic-id
+   cross-check. Tests: `topics.test.ts` cases for every shape and
+   for the legacy-shape rejection.
+2. **Stores + whole-group subscribe.** Replace single-group
+   subscribe with the three-filter phase-2 subscribe. Reshape
+   words / srs stores to `Map<deckId, Map<id, …>>`. Add a `decks`
+   store; add `activeGroupId`, `activeDeckId`, and `reviewScope`
+   runes (the first replaces the implicit "whatever `lastGroup`
+   resolves to" used in v1). Picker wiring derives `Word[]` from
+   scope before calling `pickNext`.
+3. **Deck picker view + nav-bar copy.** New `DeckPickerView` with
+   "All decks" row, per-deck rename/delete, create-new, multi-select
+   toggle, and the up-arrow chain. Nav bar has one switch button —
+   "Switch deck" — and a Group › Deck breadcrumb; no separate
+   "Switch group" button (the deck picker's up-arrow reaches the
+   group picker).
+4. **Review scope picker in Review view.** Inline three-option
+   control + multi-select sheet. Persistence to `lastReviewScope`.
+5. **Rename/delete deck publishes.** Mirror group rename/delete via
+   the PublishQueue, including the `<P>/g/<G>/d/<D>/#` subtree
+   tombstone.
+6. **Import/export v2.** New JSON shape; reject `version: 1`; deck
+   merge logic.
+
+Each slice runs end-to-end before the next is started, same as v1.
 
 ## Stack
 
@@ -215,26 +266,30 @@ mwords/
 │   │   ├── stores/
 │   │   │   ├── connection.svelte.ts  # $state, connect/disconnect
 │   │   │   ├── groups.svelte.ts      # discovered groups + active group
-│   │   │   ├── words.svelte.ts       # Map<id, Word>, CRUD via MQTT
-│   │   │   ├── srs.svelte.ts         # Map<id, SrsState>
+│   │   │   ├── decks.svelte.ts       # decks for active group + active deck + reviewScope
+│   │   │   ├── words.svelte.ts       # Map<deckId, Map<id, Word>>, CRUD via MQTT
+│   │   │   ├── srs.svelte.ts         # Map<deckId, Map<id, SrsState>>
 │   │   │   ├── settings.svelte.ts    # Settings record (global)
 │   │   │   └── queue.svelte.ts       # $state mirror of queue.pendingCount
 │   │   │
-│   │   └── types.ts                # shared domain types (Group, Word, Settings)
+│   │   └── types.ts                # shared domain types (Group, Deck, Word, ReviewScope, Settings)
 │   │
 │   ├── components/
 │   │   ├── ReviewCard.svelte
 │   │   ├── GradeButtons.svelte
+│   │   ├── ReviewScopePicker.svelte  # inline 3-option scope selector for Review
 │   │   ├── WordList.svelte
 │   │   ├── WordEditor.svelte
 │   │   ├── ConnectionForm.svelte
 │   │   ├── ConnectionBadge.svelte  # tiny "connected/disconnected" indicator
 │   │   ├── GroupListItem.svelte
+│   │   ├── DeckListItem.svelte
 │   │   ├── SettingsPanel.svelte
 │   │   └── NavBar.svelte
 │   │
 │   └── views/
 │       ├── GroupPickerView.svelte
+│       ├── DeckPickerView.svelte
 │       ├── ReviewView.svelte
 │       ├── EditView.svelte
 │       └── SettingsView.svelte
@@ -244,7 +299,8 @@ mwords/
 │   ├── weighted.test.ts
 │   ├── serial.test.ts
 │   ├── topics.test.ts
-│   └── queue.test.ts
+│   ├── queue.test.ts
+│   └── history.test.ts
 │
 ├── .github/workflows/deploy.yml    # build + deploy to Pages
 ├── index.html
@@ -318,21 +374,43 @@ mwords/
    Both subscriptions stay active for the lifetime of the connection so
    changes from other devices — new groups, renames, settings changes —
    propagate live.
-5. **Select a group.** If `lastGroup` is set in `localStorage` and
-   resolves to a discovered group, auto-select it. Otherwise render
-   `GroupPickerView` (and if `lastGroup` didn't resolve, drop it from
-   the `mwords:connection` blob). The user picks an existing group or
-   creates a new one; either way the app runs the **group-switch
-   sequence** (step 10). For an empty broker, the picker opens in
-   "create" mode by default. A "switch group" affordance from the nav
-   bar returns to the picker at any time.
-6. **Subscribe to the active group.** Subscribe to:
-   `<P>/g/<G>/words/+` and `<P>/g/<G>/srs/+`. Retained messages flood in
-   and populate the words / srs stores, gated by the timestamp-LWW check
-   described in step 9. (Settings are already loaded from phase 1 and
-   are global, so they're not re-subscribed here.) The app
-   transitions to **"synced"** only when **both** of the following are true:
-   - **SUBACK received** for the two-topic SUBSCRIBE. This is the broker's
+5. **Select a group and deck.** If `lastGroup` resolves to a discovered
+   group, auto-select it. Otherwise render `GroupPickerView` (and if
+   `lastGroup` didn't resolve, drop it from the `mwords:connection`
+   blob). The user picks an existing group or creates a new one; either
+   way the app runs the **group-switch sequence** (step 10).
+
+   Once the group is active and synced, **pick a deck**: if `lastDeck`
+   resolves to a deck inside the active group, restore it as the
+   active deck (and restore `lastReviewScope`, filtering any stale
+   deck ids). Otherwise render `DeckPickerView` — see "Deck picker"
+   below. The user picks a deck (or "All decks" for whole-group
+   review, or a multi-deck selection); the deck picker is also the
+   place where new decks are created.
+
+   For an empty broker, the group picker opens in "create" mode by
+   default; once the user creates a group, the deck picker opens
+   inside it in "create" mode too. A single "switch deck" affordance
+   in the nav bar returns to the deck picker at any time; the deck
+   picker itself has an up-arrow that reaches the group picker.
+6. **Subscribe to the active group.** Subscribe in one SUBSCRIBE to:
+   `<P>/g/<G>/d/+`, `<P>/g/<G>/d/+/words/+`, and
+   `<P>/g/<G>/d/+/srs/+`. Retained messages flood in and populate the
+   decks / words / srs stores, gated by the timestamp-LWW check
+   described in step 9. The store synthesizes the parent-deck
+   relationship from the parsed topic — `Word` and `SrsState` payloads
+   don't carry `deckId`. (Settings are already loaded from phase 1 and
+   are global, so they're not re-subscribed here.)
+
+   Loading every deck's words on group open is a deliberate trade —
+   see [`data-model.md`](./data-model.md) → "Subscription pattern (two
+   phases)". Multi-deck and whole-group Review modes become in-memory
+   filter changes; per-deck switching within a group is instant (no
+   SUBSCRIBE / UNSUBSCRIBE round-trip).
+
+   The app transitions to **"synced"** only when **both** of the
+   following are true:
+   - **SUBACK received** for the three-filter SUBSCRIBE. This is the broker's
      confirmation that our subscriptions are registered and retained replay
      (if any) is in progress. Before SUBACK we can't tell "no messages yet"
      from "broker hasn't started sending."
@@ -347,8 +425,13 @@ mwords/
    we go straight to "synced." "Synced" is a badge nuance — it doesn't
    block the UI; the user is never made to wait for it. Persist the
    chosen group by updating the `lastGroup` field inside the
-   `mwords:connection` blob in `localStorage` once subscription succeeds.
-7. **Default view** is `Review` if there's at least one due word, else `Edit`.
+   `mwords:connection` blob in `localStorage` once subscription
+   succeeds; `lastDeck` is updated separately when the user picks a
+   deck in step 5's deck-picker phase.
+7. **Default view** is `Review` if there's at least one due word in the
+   active review scope, else `Edit`. This step only runs once a deck is
+   active; the no-active-deck case has already been routed to the deck
+   picker by step 5.
 8. **User actions** call store methods, which follow a uniform pattern:
    1. **Optimistic store mutation first.** The Svelte `$state` is updated
       synchronously; the UI re-renders this microtask. The user sees the
@@ -418,29 +501,47 @@ mwords/
 10. **Group-switch sequence.** A blocking transition (unlike initial
     boot in step 6, where retained replay can stream in while the user
     interacts). Applies to both "pick existing" and "create new" from
-    the picker, and to mid-session switches via the nav bar. For new
-    groups, publish the `Group` marker first; the rest is identical.
+    the group picker, and to mid-session group switches (reached by
+    tapping the up-arrow inside the deck picker). For new groups,
+    publish the `Group` marker first; the rest is identical.
     1. If a previous group is active, overlay a full-screen
        "Switching to *{groupName}*…" spinner on the current view
-       (Review / Edit / Picker) and ignore input on it. Skipped at
+       (Review / Edit / a picker) and ignore input on it. Skipped at
        first boot — there's no prior view to block.
-    2. If a previous group is active, unsubscribe its
-       `<P>/g/<G>/words/+` and `<P>/g/<G>/srs/+` filters, **await
-       UNSUBACK** (so the broker stops delivering matching messages
-       before we touch the stores), then clear the words / srs stores.
-    3. Subscribe the new group's two filters. Wait for SUBACK + the
-       500 ms debounce (same rule as step 6).
-    4. Update `lastGroup` in `localStorage`. Dismiss the spinner.
-       Render the default view.
+    2. If a previous group is active, unsubscribe its three filters
+       (`<P>/g/<G>/d/+`, `<P>/g/<G>/d/+/words/+`,
+       `<P>/g/<G>/d/+/srs/+`), **await UNSUBACK** (so the broker
+       stops delivering matching messages before we touch the
+       stores), then clear the decks / words / srs stores and reset
+       `activeDeckId = null` and `reviewScope = { kind: 'active-deck' }`.
+    3. Subscribe the new group's three filters. Wait for SUBACK + the
+       500 ms debounce (same rule as step 6). Set `activeGroupId`
+       to the new `<G>` once SUBACK arrives.
+    4. Update `lastGroup` in `localStorage` and clear `lastDeck` and
+       `lastReviewScope` in the same write (they belonged to the
+       previous group). Dismiss the spinner. Render the deck picker
+       for the new group (no `lastDeck` to restore from at this
+       point).
 
     The discovery + global-settings subscriptions are untouched.
+
+    **Deck-switch is not a sequence.** Picking a different deck within
+    the active group is purely in-memory: set `activeDeckId`,
+    `reviewScope = { kind: 'active-deck' }`, persist `lastDeck` /
+    `lastReviewScope`, render the target view. No SUBSCRIBE /
+    UNSUBSCRIBE, no spinner. Same is true for the multi-deck and
+    whole-group review scopes.
 
     **Offline variant.** When `create new` is submitted while
     disconnected, steps 2–3 are deferred: queue the `Group` marker,
     insert the new group into the in-memory groups store with empty
-    words / srs maps, persist `lastGroup`, render the default view
+    decks / words / srs maps, persist `lastGroup` (and clear
+    `lastDeck` / `lastReviewScope`), render the deck picker
     immediately. On the next `connect`, `drainAll()` flushes the
-    marker, then the deferred subscribe + debounce runs.
+    marker, then the deferred subscribe + debounce runs. Creating the
+    first deck inside that group is an analogous offline-tolerant
+    publish — the `Deck` marker is queued and the deck appears
+    instantly in the in-memory store.
 
 ## Connection form
 
@@ -525,7 +626,7 @@ binding without re-typing.
   other stats. Order in v1 is "as discovered" (insertion order into the
   groups store from the retained replay); explicit sorting can be added
   later. The picker stays fast because we don't pre-subscribe to every
-  group's words just to render the list.
+  group's decks and words just to render the list.
 - **Each row has an inline "edit" affordance** (pencil icon, tap-to-rename).
   Tapping it switches the row into rename mode with the current name in a
   text input; submitting publishes a new `Group` to the same `<P>/g/<G>`
@@ -535,12 +636,15 @@ binding without re-typing.
   a fresh id (`Date.now().toString()`), publishes the `Group` marker
   via the PublishQueue, then runs the group-switch sequence (step 10).
 - Both inputs validate the name against the rules in
-  [data-model.md](./data-model.md) → "Group names (display only)".
+  [data-model.md](./data-model.md) → "Group and deck names (display only)".
 - **Each row also has an inline "delete" affordance** (✖, danger-coloured)
   with a `confirm()` dialog. See "Group deletion" below for the publish
   shape and broker caveats.
-- Reachable any time via a "switch group" entry in the nav bar. Switching
-  is cheap — only the two group-scoped subscriptions change.
+- Reachable from the **deck picker's up-arrow** (the nav bar has no
+  direct "switch group" entry — its "Switch deck" button reaches the
+  deck picker first). Group switching pays for an UNSUBSCRIBE +
+  SUBSCRIBE round-trip and a brief "Switching to *…*" overlay; see
+  step 10.
 
 ### Group deletion
 
@@ -550,25 +654,119 @@ PublishQueue:
 
 1. `<P>/g/<G>/#` — a retained-empty publish to the wildcard-subtree
    topic. **This is a broker-specific extension.** flespi treats it
-   as "clear all retained messages under this prefix" — so all the
-   group's `words/<id>` and `srs/<id>` retained messages disappear in
-   one shot. The MQTT 5 spec doesn't require this behaviour; on a
-   strict broker the publish may be rejected (since `#` is a reserved
-   wildcard character in topic strings) or stored as a literal `#`-
-   suffixed topic, leaving the words/srs as orphans. Accepted for v1
-   on the assumption the user is on flespi; documented for porting.
+   as "clear all retained messages under this prefix" — so every
+   `d/<D>` marker plus every nested `words/<id>` and `srs/<id>`
+   retained message under the group disappears in one shot. The MQTT
+   5 spec **forbids** `#` (and `+`) in a PUBLISH topic name
+   (§4.7.1), so on a strictly-conforming broker the PUBLISH is
+   rejected with a `Topic Name invalid` reason code (0x90) and the
+   subtree is left intact. Accepted for v1 on the assumption the
+   user is on flespi; documented for porting.
 2. `<P>/g/<G>` — the group marker itself, so peers drop it from their
    picker via the usual tombstone path.
 
 Local cleanup happens optimistically before the publish (the
 tombstones live in the durable queue, so they survive a flaky
 connection). If the deleted group was active, mwords also
-unsubscribes the phase-2 filters, clears the words/srs maps, clears
-`lastGroup` and `pickerReturn`, and sets `activeGroupId = null`.
-There is **no tombstone watermark for groups** in v1 — a peer's
-stale `Group` republish for the deleted id could in principle
-resurrect it. Accepted on the same "users rarely delete groups"
-basis as the broker caveat above.
+unsubscribes the phase-2 filters, clears the decks / words / srs
+maps, clears `lastGroup`, `lastDeck`, `lastReviewScope`, and
+`pickerReturn`, and sets `activeGroupId = activeDeckId = null`.
+There is **no tombstone watermark for groups or decks** in v1 — a
+peer's stale `Group` / `Deck` republish for a deleted id could in
+principle resurrect it. Accepted on the same "users rarely delete
+groups / decks" basis as the broker caveat above.
+
+## Deck picker
+
+The deck picker is the screen reached after a group is active — at
+boot (when no `lastDeck` resolves) and at any time via the nav bar's
+"Switch deck" button. It is **always scoped to one group** (the active
+one).
+
+- **Header** shows the active group's name and an **up-arrow** on the
+  left. Tapping the arrow opens the group picker via `replaceIntent`
+  (so back from the new group's deck picker returns to whichever view
+  led into the switch-deck flow originally, not through an
+  intermediate group picker entry).
+- **"All decks (review)" row at the top** — a fixed first row. Tapping
+  it sets `reviewScope = { kind: 'group' }` (does **not** change
+  `activeDeckId`) and pushes the Review view. The Edit tab is still
+  usable while in this scope, but tapping it silently narrows scope
+  back to `{ kind: 'active-deck' }`; if `activeDeckId` is null, the
+  Edit tab pushes the deck picker first with `pickerReturn = 'edit'`.
+- **One row per deck**. Each row shows the deck name and a word count.
+  Order is "as discovered" (same convention as the group picker). Tap
+  to set `activeDeckId = <D>` and `reviewScope = { kind: 'active-deck' }`,
+  then push the target view (Review by default, or whatever
+  `pickerReturn` was set to).
+- **Pencil + ✖ per row**, mirroring the group picker affordances.
+  Rename publishes a new `Deck` to the same `<P>/g/<G>/d/<D>` topic.
+  Delete is gated by `confirm()` and runs the deck-deletion publish
+  (see "Deck deletion" below).
+- **"Create new deck" inline input** at the bottom. Validates the name
+  against [data-model.md](./data-model.md) → "Group and deck names
+  (display only)". On submit, allocates a fresh
+  `Date.now().toString()` id, publishes the `Deck` marker via the
+  PublishQueue, sets it as the active deck, and pushes the target
+  view. Offline-tolerant — see step 10's offline variant.
+- **"Select multiple" toggle** in the header. Flips rows into
+  checkbox mode and shows a sticky bottom "Review selected (N)"
+  button. Tapping that button sets `reviewScope = { kind: 'decks',
+  deckIds: <selected> }` and pushes Review. Multi-deck selection does
+  **not** change `activeDeckId` (just like the "All decks" row).
+- Empty group: the picker still renders with the header, the "All
+  decks" row (which when empty just shows a "No words yet" Review
+  view), and the "Create new deck" input.
+
+## Review scope
+
+`reviewScope` is the projection that controls which words the Review
+picker sees. The store derives a flat `Word[]` based on it and hands
+that to the picker dispatcher (`pickNext`):
+
+```ts
+type ReviewScope =
+  | { kind: 'active-deck' }                       // words in activeDeckId
+  | { kind: 'decks'; deckIds: string[] }          // union over deckIds
+  | { kind: 'group' };                            // union over active group
+```
+
+- Default is `{ kind: 'active-deck' }`.
+- Set by the deck picker entries (single row → `active-deck`,
+  multi-select → `decks`, "All decks" row → `group`).
+- Set by the **Review view's inline scope selector** — a compact
+  three-option control at the top of the Review view: *Just this deck
+  / Selected decks / All decks*. *Selected decks* opens a mini
+  multi-select sheet listing the active group's decks; the previously
+  selected `deckIds`, if any, are pre-checked.
+- Persisted to `localStorage` (`lastReviewScope`) alongside `lastDeck`.
+  Multi-deck `deckIds` are filtered against the active group's decks
+  on restore; an empty filtered list falls back to `active-deck`.
+- **Edit always operates on the active deck.** If `reviewScope` is
+  `decks` or `group` and the user enters Edit, scope silently narrows
+  to `{ kind: 'active-deck' }` and the persistence is rewritten
+  accordingly. The status line in Edit shows "Editing: *{deckName}*"
+  to make the narrowing explicit.
+
+### Deck deletion
+
+Tap the ✖ on a deck row, confirm, and the picker publishes **two
+tombstones** via the PublishQueue:
+
+1. `<P>/g/<G>/d/<D>/#` — wildcard-subtree retained-empty publish.
+   Same flespi-extension caveat as group deletion; on strict brokers,
+   the words/srs under the deck become orphans.
+2. `<P>/g/<G>/d/<D>` — the deck marker itself.
+
+Local cleanup is optimistic. If the deleted deck was the
+`activeDeckId`, it's cleared (set to null); if it appeared in a
+`reviewScope.deckIds` list, it's pruned from the list (and the scope
+falls back to `active-deck` if the list goes empty). `lastDeck` is
+cleared from `localStorage` if it pointed at this deck. The user
+lands back in the deck picker for the active group.
+
+There is no tombstone watermark for decks (same reasoning as groups —
+deletion is rare; acceptable LWW trade-off).
 
 ## Export and import
 
@@ -576,31 +774,39 @@ A small "Import / Export" card on the group picker lets the user move
 their **content** between mwords instances. Scope is intentionally
 narrow:
 
-- **Content only.** Group names and word text/translation pairs only.
-  SRS state, ids, timestamps, settings, and per-device prefs
-  (`lastGroup`, `autoconnect`) are deliberately **not** in the file.
-  This is a way to share or seed *what to learn*, not a full backup
-  and restore. Re-importing a file into the same instance merges the
-  groups by name (see "Import" below) but duplicates every word
-  inside them with reset SRS state, because v1 doesn't dedup words
-  by `text` / `translation`.
+- **Content only.** Group names, deck names, and word text/translation
+  pairs only. SRS state, ids, timestamps, settings, and per-device
+  prefs (`lastGroup`, `lastDeck`, `lastReviewScope`, `autoconnect`)
+  are deliberately **not** in the file. This is a way to share or
+  seed *what to learn*, not a full backup and restore. Re-importing
+  a file into the same instance merges groups by name and decks by
+  name within each group (see "Import" below) but duplicates every
+  word inside them with reset SRS state, because v2 doesn't dedup
+  words by `text` / `translation`.
 - **Format.** A single JSON file:
   ```json
   {
-    "version": 1,
+    "version": 2,
     "groups": [
       {
-        "name": "German A1",
-        "words": [
-          { "text": "Hallo", "translation": "Hello" }
+        "name": "German",
+        "decks": [
+          {
+            "name": "A1 Verbs",
+            "words": [
+              { "text": "Hallo", "translation": "Hello" }
+            ]
+          }
         ]
       }
     ]
   }
   ```
   Minified (`JSON.stringify(value)` — no indentation). The `version`
-  field lets the schema evolve without silently mis-parsing old
-  files.
+  field gates the schema. **`version: 1` files are rejected** —
+  the v1 schema had no deck level, so an automatic upgrade would
+  have to invent deck names; we refuse and tell the user to
+  re-export from the source instance.
 
 ### Export
 
@@ -638,25 +844,32 @@ narrow:
   1. Lazy-import `mqtt` (already split out for the main client, so
      no extra bundle cost on second use) and open a fresh client
      against `storedConn`. Wait for `connect`.
-  2. Allocate the capture map: `Map<gid, { name?: string; words:
-     Map<wordId, {text: string; translation: string}> }>`.
+  2. Allocate the capture map:
+     `Map<gid, { name?: string; decks: Map<did, { name?: string;
+     words: Map<wordId, {text, translation}> }> }>`.
   3. `subscribe('<P>/g/#', { qos: 1 })` — one SUBSCRIBE packet with
      one wildcard filter. No chunking concerns and no broker
      filter-count ceiling to worry about.
   4. The export client's message handler routes by parsed topic:
      - `<P>/g/<G>` (group marker) → validate, set `capture[G].name`
        (or remove the entry on tombstone).
-     - `<P>/g/<G>/words/<id>` → validate, set
-       `capture[G].words[id]` (or remove on tombstone).
-     - `<P>/g/<G>/srs/<id>` → ignored (export is content-only).
+     - `<P>/g/<G>/d/<D>` (deck marker) → validate, set
+       `capture[G].decks[D].name` (or remove the deck on tombstone).
+     - `<P>/g/<G>/d/<D>/words/<id>` → validate, set
+       `capture[G].decks[D].words[id]` (or remove on tombstone).
+     - `<P>/g/<G>/d/<D>/srs/<id>` → ignored (export is content-only).
+     - Anything else (including legacy `<P>/g/<G>/words/<id>` from
+       the old shape) → ignored.
   5. Wait for the same 500 ms post-message debounce mwords already
      trusts for "synced". A local timer in the export module
      resets on every incoming message; 500 ms of silence means the
      retained replay drained.
   6. Snapshot the capture into the export JSON (dropping groups
-     whose name was tombstoned away, dropping word entries that
-     went tombstone). Trigger a browser download via `Blob` +
-     `URL.createObjectURL` + a synthetic `<a download>` click.
+     whose name was tombstoned away, dropping decks ditto, dropping
+     word entries that went tombstone, and dropping any deck with
+     zero words — the file is for seeding *content*). Trigger a
+     browser download via `Blob` + `URL.createObjectURL` + a
+     synthetic `<a download>` click.
   7. `client.end(true)` to close the export client.
 - **No "Exporting…" overlay needed**, because the main UI keeps
   working. A small inline status next to the button ("Exporting…"
@@ -672,19 +885,24 @@ narrow:
 - Button: "Import from file" in the same card, behind a hidden
   `<input type="file" accept=".json">` that the button triggers
   programmatically.
-- The file is parsed and validated against the v1 schema (object
-  with `version: 1`, `groups: array`, each group with a non-empty
+- The file is parsed and validated against the v2 schema (object
+  with `version: 2`, `groups: array`, each group with a non-empty
+  trimmed `name` and a `decks: array`, each deck with a non-empty
   trimmed `name` and a `words` array of `{text, translation}`
-  objects). On any validation failure: no state changes, surface a
-  clear error.
-- **Merge by group name.** For each group in the file:
+  objects). `version: 1` files are rejected with a clear "Re-export
+  from the source instance" error. On any other validation
+  failure: no state changes, surface a clear error.
+- **Merge by name, two levels.** For each group in the file:
   - If a local group already exists with the same trimmed name,
-    merge into it: append every imported word as a *new* word
-    (fresh id, fresh timestamps, default SRS state). Existing
-    words in that group are left untouched — no de-duplication by
-    text/translation in v1.
-  - If no local group matches, create a new group (fresh id, fresh
-    timestamps) and import every word into it.
+    reuse it; otherwise create a new one (fresh id, fresh
+    timestamps).
+  - For each deck inside that group: if a local deck already
+    exists with the same trimmed name *within that same group*,
+    reuse it; otherwise create a new deck (fresh id, fresh
+    timestamps).
+  - For each word inside that deck: always create a fresh word
+    (new id, new timestamps, default SRS state) under the resolved
+    deck. No de-duplication by text/translation in v2.
 - All publishes go through the existing PublishQueue, so the import
   is resilient to a flaky connection and idempotent under the same
   retry semantics as normal edits.
@@ -1014,8 +1232,9 @@ Flush itself is driven by `connect`.
 On mobile, the hardware/gesture back button is the primary "undo this step"
 affordance. In v1 the app ignored it entirely — every press unloaded the SPA.
 v2 wires the app into `window.history` so back/forward feel native: dismiss
-the open modal, leave the switch-group picker, walk back through the tabs
-the user actually visited, and only exit when there's nothing left to undo.
+the open modal, leave the deck (or group) picker, walk back through the
+tabs the user actually visited, and only exit when there's nothing left
+to undo.
 
 No URL routing. The address bar never changes (except the one-shot share-hash
 scrub on boot). History entries carry a synthetic `state` payload only; the
@@ -1028,18 +1247,28 @@ The app's navigable state is reduced to an **intent**:
 
 ```ts
 type Intent = {
-  view: 'connect' | 'picker' | 'review' | 'edit' | 'settings';
+  view: 'connect' | 'picker' | 'deck-picker' | 'review' | 'edit' | 'settings';
   modal?:
-    | { kind: 'word-editor'; wordId?: string }  // wordId absent ⇒ new word
-    | { kind: 'rename-group'; groupId: string };
-  pickerReturn?: 'review' | 'edit' | 'settings';  // only with view: 'picker'
+    | { kind: 'word-editor'; wordId?: string }    // wordId absent ⇒ new word
+    | { kind: 'rename-group'; groupId: string }
+    | { kind: 'rename-deck'; deckId: string };
+  pickerReturn?: 'review' | 'edit' | 'settings';  // set with view: 'picker'
+                                                  // or view: 'deck-picker'
 };
 ```
 
 This is the **only** thing pushed to `history.state` (under a `mwords` key to
 namespace against any future use of `history.state`). The store still has its
-existing fine-grained runes (`view`, `pickerReturn`, modal-open flags, etc.);
-the intent is just the projection that matters for navigation.
+existing fine-grained runes (`view`, `pickerReturn`, modal-open flags,
+`activeDeckId`, `reviewScope`, etc.); the intent is just the projection
+that matters for navigation.
+
+`pickerReturn` is the **final** destination after picker chains
+finish. From the group picker, picking a group routes through the
+deck picker (via `replaceIntent({ view: 'deck-picker', pickerReturn })`)
+before reaching `pickerReturn` — the user always picks a deck before
+landing in Review / Edit / Settings. From the deck picker, picking a
+deck `replaceIntent`s straight to `pickerReturn`.
 
 ### Push, replace, and the single mutator
 
@@ -1050,24 +1279,35 @@ The store grows two methods:
 - `replaceIntent(next: Intent)` — apply `next`, then `history.replaceState`.
 
 Every existing affordance that changes view, opens/closes a modal, or enters
-the switch-group flow routes through one of these — direct mutation of
-`app.view` / `app.pickerReturn` is removed from components. Affordances using
-each:
+the switch-deck (and onward switch-group) flow routes through one of
+these — direct mutation of `app.view` / `app.pickerReturn` is removed
+from components. Affordances using each:
 
 | Action                                                | Method            |
 | ----------------------------------------------------- | ----------------- |
 | `init()` seeds the first entry                        | `replaceIntent`   |
-| Connect form submit success → picker (no `lastGroup`) | `pushIntent`      |
-| Connect form submit success → review (with `lastGroup`)| `pushIntent`     |
-| Picker row picked → review                            | `pushIntent`      |
+| Connect form submit success → group picker (no `lastGroup`) | `pushIntent`      |
+| Connect form submit success → deck picker (`lastGroup` resolves, no `lastDeck`) | `pushIntent` |
+| Connect form submit success → review (`lastGroup` + `lastDeck` resolve) | `pushIntent` |
+| Group-picker row picked → deck picker (keeps `pickerReturn`) | `replaceIntent`   |
+| Deck-picker row picked → `pickerReturn` (review/edit/settings) | `replaceIntent` |
+| Deck-picker "All decks" picked → review               | `replaceIntent`   |
+| Deck-picker "Review selected (N)" → review            | `replaceIntent`   |
 | Nav-bar tab tap (review ↔ edit ↔ settings)            | `pushIntent`      |
-| Nav-bar "switch group" → picker                       | `pushIntent` (with `pickerReturn`) |
-| Picker pencil → rename modal                          | `pushIntent`      |
+| Nav-bar "switch deck" → deck picker                   | `pushIntent` (with `pickerReturn`) |
+| Deck picker up-arrow → group picker                   | `replaceIntent` (keeps `pickerReturn`) |
+| Picker pencil → rename modal (group / deck)           | `pushIntent`      |
 | Edit "Add word" / row tap → word-editor modal         | `pushIntent`      |
 | Modal Save / Cancel / ✖                               | `history.back()` (see below) |
-| Picker "Back" arrow in switch mode                    | `history.back()`  |
 | Settings → Disconnect → connect form                  | `replaceIntent`   |
 | Share-hash scrub                                      | `history.replaceState` (already in place) |
+
+The deck picker's up-arrow uses `replaceIntent` rather than
+`pushIntent` so that after the user picks a different group in the
+group picker (which also `replaceIntent`s onward to its deck picker),
+the back stack reads "originating view → new group's deck picker" —
+no intermediate group-picker entry. Back from the new deck picker
+lands the user wherever they started the switch-deck flow.
 
 ### popstate is the single applier
 
@@ -1102,9 +1342,15 @@ can rely on it. Seeding rules:
   (matches the "Should the connect form be poppable? — Yes" decision).
 - Stored creds without autoconnect, or no creds: `replaceIntent({ view: 'connect' })`.
 
-The post-connect destination follows the existing rule: if `lastGroup`
-resolves to a discovered group → `view: 'review'`, otherwise → `view: 'picker'`
-(no `pickerReturn` — this is the natural landing, not a switch-group flow).
+The post-connect destination follows a two-step resolution:
+
+- `lastGroup` doesn't resolve → `view: 'picker'` (group picker), no
+  `pickerReturn` (the natural landing, not a switch flow).
+- `lastGroup` resolves, but `lastDeck` doesn't resolve to a deck
+  inside that group → `view: 'deck-picker'`, no `pickerReturn`.
+- Both `lastGroup` and `lastDeck` resolve → `view: 'review'` (with
+  `lastReviewScope` restored, multi-deck `deckIds` filtered against
+  the active group).
 
 ### Disconnect from Settings
 
@@ -1113,12 +1359,27 @@ JS, so an entry like `[…, settings, connect]` survives — but the user can
 still press forward (or, on iOS, a second-finger forward gesture) and land
 on an intent that says `view: 'settings'` while the app is disconnected.
 
-The popstate / state-applier handles this with a **preconditions check**: if
-the popped intent requires `connection === 'connected'` and an active group
-(true for `review`, `edit`, `settings`) and either isn't present, the
-listener falls back to `replaceIntent({ view: 'connect' })` instead of
-applying the popped intent. Net effect: back/forward never lands the user in
-a UI state the store can't actually support.
+The popstate / state-applier handles this with a **preconditions check**:
+
+- `review`, `edit`: require `connection === 'connected'`, an active
+  group, **and** an active deck (Edit edits within a deck; Review's
+  default `active-deck` scope needs one too — broader scopes are
+  re-entry concerns handled by the scope persistence rules).
+- `deck-picker`: requires `connection === 'connected'` and an active
+  group.
+- `settings`: requires `connection === 'connected'` only. Settings is
+  **global** (see [`data-model.md`](./data-model.md) → "Topic prefix,
+  groups, and decks") and its primary affordance is Disconnect, which
+  must be reachable from a fresh-group state where no deck is active
+  yet.
+- `picker`, `connect`: no preconditions.
+
+If any precondition isn't met, the listener falls back to the closest
+supportable view: `replaceIntent({ view: 'connect' })` if disconnected,
+otherwise `replaceIntent({ view: 'picker' })` if no active group,
+otherwise `replaceIntent({ view: 'deck-picker' })` if no active deck.
+Net effect: back/forward never lands the user in a UI state the store
+can't actually support.
 
 ### scrollRestoration
 
@@ -1168,9 +1429,12 @@ one-handed; desktop is a secondary target.
 - **Single column at all sizes.** No multi-column dashboards. On wide screens
   the content centers within a max-width (~640 px) container so it stays
   readable, with whitespace on the sides rather than a separate desktop layout.
-- **Bottom nav bar.** The view switcher (Review / Edit / Settings) and
-  connection badge live in a sticky bottom bar — thumbs reach the bottom of a
-  phone screen more easily than the top.
+- **Bottom nav bar.** The view switcher (Review / Edit / Settings), a
+  single "Switch deck" button, the active Group › Deck breadcrumb, and
+  the connection badge live in a sticky bottom bar — thumbs reach the
+  bottom of a phone screen more easily than the top. There is no
+  separate "Switch group" button: the deck picker reached from this
+  button has an up-arrow in its header that pushes the group picker.
 - **Safe-area insets.** Use `env(safe-area-inset-*)` for the bottom nav and
   any fixed elements, so they clear iOS notches and the home-bar gesture area.
 - **Viewport meta tag.** `width=device-width, initial-scale=1,
@@ -1316,11 +1580,50 @@ over WebSocket** — TCP-only brokers won't work.
      step with *"Branch is not allowed to deploy to github-pages
      due to environment protection rules."*
 
+## Migration
+
+**There is no v1 → v2 migration.** v2's topic parser only recognises
+the new five-shape set (see [data-model.md](./data-model.md) →
+"Validation"); legacy v1 retained messages (single-level
+`<P>/g/<G>/words/<id>` / `<P>/g/<G>/srs/<id>`) are silently ignored.
+
+The recommended path for a user moving from v1 to v2:
+
+1. **Export from v1** (if data is wanted) using the v1 Export — keeps
+   group names and word pairs in a JSON file.
+2. **Switch to a fresh prefix** in the connection form (e.g. append
+   `-v2` to the existing prefix) so v1 retained state is untouched
+   and visible if the user wants to roll back.
+3. **Import into v2.** The v1 file's `version: 1` is rejected; the
+   user re-enters the deck names manually in v2 and re-pastes the
+   word lists, or hand-edits the JSON to the v2 shape (single
+   default deck per group) and imports that. Acceptable friction
+   for what is a deliberate, infrequent change.
+4. Once happy, the user can tombstone the old `<P>/...` retained
+   state at the broker level (mosquitto_pub loop, flespi UI, or
+   broker-specific subtree-clear) — mwords does not ship a button
+   for this.
+
+No code-level v1 compatibility paths exist in v2 — the simplification
+is the whole point.
+
 ## Out of scope for v1
 
-- Multi-user / shared decks (single user assumed; broker ACLs handle isolation).
+- Multi-user / shared groups (single user assumed; broker ACLs handle isolation).
 - Conflict resolution beyond "last write wins".
 - Importing/exporting Anki `.apkg` files.
 - Audio, images, rich text on cards.
 - A service worker / installable PWA.
 - Analytics, telemetry.
+
+## Out of scope for v2
+
+- Moving a word between decks. Implementing it cleanly requires
+  tombstone + re-create with a new id, which resets SRS state; an
+  in-place move would need either a `Word.deckId` payload field
+  (denormalising the topic address) or topic-rename support that
+  MQTT doesn't have. Defer.
+- Nested decks beyond one level (deck inside a deck inside a
+  group). The schema is intentionally a strict two-level hierarchy.
+- Cross-group review (one Review session spanning multiple groups
+  at once). Each group is a hard scope boundary.

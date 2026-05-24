@@ -6,16 +6,19 @@
 
 A simple browser-based, Anki-like flashcard app for language learning, with
 spaced-repetition review and an editable word list. Words are organised
-into named **groups** (decks); the user picks or creates one on first
-connect before reviewing or editing.
+into a two-level hierarchy: **groups** at the top (a *language* or
+*project* — "German", "Spanish") and **decks** inside them (study sets
+like "A1 Verbs", "Food"). On first connect the user picks (or creates) a
+group, then a deck, and Review can scope to a single deck, a selection
+of decks, or every deck in the group.
 
 **Design at a glance.** Frontend-only (Svelte 5 + Vite + TypeScript), no
 backend service of our own. All persistent state — words, per-card SRS
-state, settings, groups — lives in retained topics on an MQTT broker the
-user connects to over WSS. Only broker credentials are kept in
-`localStorage`; an IndexedDB-backed publish queue lets edits made offline
-sync once the broker is reachable again. Designed to be hosted on GitHub
-Pages.
+state, settings, groups, decks — lives in retained topics on an MQTT
+broker the user connects to over WSS. Only broker credentials are kept
+in `localStorage`; an IndexedDB-backed publish queue lets edits made
+offline sync once the broker is reachable again. Designed to be hosted
+on GitHub Pages.
 
 See [`docs/design.md`](./docs/design.md) for the full design,
 [`docs/data-model.md`](./docs/data-model.md) for the MQTT topic and payload
