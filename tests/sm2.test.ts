@@ -66,11 +66,19 @@ describe('sm2.transition', () => {
     expect(s.lapses).toBe(10);
   });
 
-  it('due advances by exactly intervalDays * 86400 from now', () => {
+  it('due advances by exactly intervalDays * 86400 from now (default)', () => {
     const s1 = transition(fresh(), 'good', NOW);
     expect(s1.due).toBe(NOW + 1 * 86_400);
     const s2 = transition(s1, 'good', NOW + 100);
     expect(s2.due).toBe(NOW + 100 + 6 * 86_400);
+  });
+
+  it('due honours a custom intervalSeconds (12 hours)', () => {
+    const TWELVE_H = 12 * 3600;
+    const s1 = transition(fresh(), 'good', NOW, TWELVE_H);
+    expect(s1.due).toBe(NOW + 1 * TWELVE_H);
+    const s2 = transition(s1, 'good', NOW + 100, TWELVE_H);
+    expect(s2.due).toBe(NOW + 100 + 6 * TWELVE_H);
   });
 
   it('reviewCount increments', () => {

@@ -14,7 +14,7 @@ import {
   srsTopic,
 } from '../mqtt/topics.ts';
 import type { Deck, Group, ReviewScope, Settings, SrsState, Word, Grade } from '../types.ts';
-import { defaultSettings, defaultSrs } from '../types.ts';
+import { DEFAULT_REPEAT_HOURS, defaultSettings, defaultSrs } from '../types.ts';
 import { applyGrade } from '../srs/picker.ts';
 import * as creds from '../storage/credentials.ts';
 import type { StoredConnection } from '../storage/credentials.ts';
@@ -1169,7 +1169,8 @@ class AppStore {
     if (!did) return;
     const gid = this.activeGroupId;
     const cur = this.srs.get(wordId) ?? defaultSrs(wordId);
-    const next = applyGrade(cur, g, Date.now() / 1000);
+    const intervalSeconds = (this.settings.repeatHours ?? DEFAULT_REPEAT_HOURS) * 3600;
+    const next = applyGrade(cur, g, Date.now() / 1000, intervalSeconds);
     this.srs.set(wordId, next);
     void queue
       .publishIntent(srsTopic(this.storedConn.prefix, gid, did, wordId), next)

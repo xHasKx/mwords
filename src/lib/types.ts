@@ -50,12 +50,21 @@ export type ReviewScope =
 export type Settings = {
   srsMode: SrsMode;
   direction: Direction;
+  // Hours between repeats of a graded card (the unit `intervalDays`
+  // multiplies). Default 24 = classic SM-2 in days. Optional in the
+  // type for back-compat with Settings published by older versions
+  // that didn't have the field; read sites must default to
+  // DEFAULT_REPEAT_HOURS when absent.
+  repeatHours?: number;
   updated: number;
 };
+
+export const DEFAULT_REPEAT_HOURS = 24;
 
 export const defaultSettings = (): Settings => ({
   srsMode: 'sm2',
   direction: 'text',
+  repeatHours: DEFAULT_REPEAT_HOURS,
   updated: 0,
 });
 

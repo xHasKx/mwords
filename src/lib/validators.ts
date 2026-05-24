@@ -75,5 +75,13 @@ export function isSettings(x: unknown): x is Settings {
   if (typeof o.srsMode !== 'string' || !SRS_MODES.has(o.srsMode)) return false;
   if (typeof o.direction !== 'string' || !DIRECTIONS.has(o.direction)) return false;
   if (!isFiniteNonNeg(o.updated)) return false;
+  // repeatHours is optional — Settings written by older versions
+  // didn't have it. Reject only when present and malformed.
+  if (
+    o.repeatHours !== undefined &&
+    (typeof o.repeatHours !== 'number' || !Number.isInteger(o.repeatHours) || o.repeatHours < 1)
+  ) {
+    return false;
+  }
   return true;
 }

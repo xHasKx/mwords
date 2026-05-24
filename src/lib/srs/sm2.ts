@@ -7,7 +7,18 @@ const QUALITY: Record<Grade, number> = {
   easy: 5,
 };
 
-export function transition(state: SrsState, grade: Grade, now: number): SrsState {
+// Seconds per `intervalDays` unit. The "day" in the SM-2 model is one
+// repeat interval; mwords lets the user shorten/extend it via the
+// Settings → Repeat interval control. Default 86_400 = 24h, matching
+// classic SM-2 in days.
+export const DEFAULT_INTERVAL_SECONDS = 86_400;
+
+export function transition(
+  state: SrsState,
+  grade: Grade,
+  now: number,
+  intervalSeconds: number = DEFAULT_INTERVAL_SECONDS,
+): SrsState {
   const q = QUALITY[grade];
 
   let { ease, reps, intervalDays, lapses } = state;
@@ -31,7 +42,7 @@ export function transition(state: SrsState, grade: Grade, now: number): SrsState
     intervalDays,
     reps,
     lapses,
-    due: now + intervalDays * 86_400,
+    due: now + intervalDays * intervalSeconds,
     lastGrade: grade,
     reviewCount: state.reviewCount + 1,
     updated: now,

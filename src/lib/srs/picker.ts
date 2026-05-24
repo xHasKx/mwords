@@ -28,8 +28,13 @@ export function pickNext(args: PickArgs): Word | null {
   }
 }
 
-export function applyGrade(state: SrsState, grade: Grade, now: number): SrsState {
+export function applyGrade(
+  state: SrsState,
+  grade: Grade,
+  now: number,
+  intervalSeconds?: number,
+): SrsState {
   // All three modes write the same fields — sm2 transition keeps history
   // consistent across mode switches.
-  return sm2transition(state, grade, now);
+  return sm2transition(state, grade, now, intervalSeconds);
 }

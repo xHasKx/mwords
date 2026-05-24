@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/stores/app.svelte.ts';
-  import type { Direction, SrsMode } from '../lib/types.ts';
+  import { DEFAULT_REPEAT_HOURS, type Direction, type SrsMode } from '../lib/types.ts';
 
   const modes: { value: SrsMode; label: string; hint: string }[] = [
     { value: 'sm2', label: 'SM-2', hint: 'Classic spaced-repetition with due dates.' },
@@ -12,12 +12,38 @@
   let shareStatus = $state<'idle' | 'copied' | 'manual'>('idle');
   let shareStatusTimer: number | null = null;
 
+  // Repeat-interval input. Local draft state so the user can type
+  // freely without each keystroke publishing to the broker; commit on
+  // blur or Enter (or via the inline Save button if the value parses).
+  let repeatHoursDraft = $state(String(app.settings.repeatHours ?? DEFAULT_REPEAT_HOURS));
+  // Re-seed the draft whenever the source value changes from elsewhere
+  // (initial sync, peer update). The string comparison avoids stomping
+  // the user's mid-edit value when their own publish round-trips.
+  $effect(() => {
+    const current = String(app.settings.repeatHours ?? DEFAULT_REPEAT_HOURS);
+    if (current !== repeatHoursDraft && document.activeElement?.id !== 'repeat-hours') {
+      repeatHoursDraft = current;
+    }
+  });
+  let repeatHoursError = $state<string | null>(null);
+
   async function setMode(m: SrsMode) {
     await app.updateSettings({ srsMode: m });
   }
 
   async function setDirection(d: Direction) {
     await app.updateSettings({ direction: d });
+  }
+
+  async function commitRepeatHours() {
+    const n = Number(repeatHoursDraft);
+    if (!Number.isInteger(n) || n < 1) {
+      repeatHoursError = 'Whole number of hours, 1 or more.';
+      return;
+    }
+    repeatHoursError = null;
+    if (n === (app.settings.repeatHours ?? DEFAULT_REPEAT_HOURS)) return;
+    await app.updateSettings({ repeatHours: n });
   }
 
   function disconnect() {
@@ -65,6 +91,29 @@
         </button>
       {/each}
     </div>
+  </fieldset>
+
+  <fieldset class="card col">
+    <legend><strong>Repeat interval</strong></legend>
+    <div class="muted hint">
+      Hours between repeats of a graded card. Default 24 (one day). Lower values shorten every SM-2 interval; the scheduling logic is otherwise unchanged.
+    </div>
+    <div class="row">
+      <input
+        id="repeat-hours"
+        type="number"
+        inputmode="numeric"
+        min="1"
+        step="1"
+        bind:value={repeatHoursDraft}
+        onblur={commitRepeatHours}
+        onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitRepeatHours(); } }}
+      />
+      <span class="muted">hours</span>
+    </div>
+    {#if repeatHoursError}
+      <div class="error">{repeatHoursError}</div>
+    {/if}
   </fieldset>
 
   <fieldset class="card col">
@@ -121,4 +170,6 @@
   }
   .share-hint { font-size: 0.85rem; }
   .manual-share { font-family: monospace; font-size: 0.8rem; }
+  .hint { font-size: 0.85rem; }
+  #repeat-hours { max-width: 8rem; }
 </style>
