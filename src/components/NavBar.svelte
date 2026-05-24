@@ -5,38 +5,6 @@
   type View = 'review' | 'edit' | 'settings';
   function go(v: View) { app.navTo(v); }
   function switchGroup() { app.switchGroup(); }
-
-  let wrapEl: HTMLDivElement | null = $state(null);
-  let dbg = $state('');
-  // The largest innerHeight observed so far — proxy for the
-  // URL-bar-collapsed (lvh) viewport. Firefox on Android anchors
-  // position:fixed;bottom:0 to this even when the URL bar is up and
-  // the current layout viewport is shorter — leaving a gap between
-  // the nav and the visible bottom. Translate DOWN by (lvh - ih) to
-  // close it.
-  let lvh = 0;
-
-  $effect(() => {
-    if (typeof window === 'undefined') return;
-    function sync() {
-      if (!wrapEl) return;
-      const ih = window.innerHeight;
-      if (ih > lvh) lvh = ih;
-      const lift = Math.max(0, lvh - ih);
-      wrapEl.style.transform = `translate3d(0, ${lift}px, 0)`;
-      dbg = `ih=${ih} lvh=${lvh} lift=${lift}`;
-    }
-    sync();
-    window.addEventListener('resize', sync);
-    const vv = window.visualViewport;
-    vv?.addEventListener('resize', sync);
-    vv?.addEventListener('scroll', sync);
-    return () => {
-      window.removeEventListener('resize', sync);
-      vv?.removeEventListener('resize', sync);
-      vv?.removeEventListener('scroll', sync);
-    };
-  });
 </script>
 
 <!--
@@ -49,8 +17,7 @@
   how the browser computes that env value and re-introduces the
   inflated-height bug at the top of the page.
 -->
-<div class="nav-wrap" bind:this={wrapEl}>
-  <div class="dbg">{dbg}</div>
+<div class="nav-wrap">
   <nav class="nav" aria-label="Main">
     <button
       class="tab icon"
@@ -86,20 +53,8 @@
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 40;
-    /* transform set inline by the $effect above (translate3d for both
-       compositor promotion and the Firefox-Android lift). */
+    transform: translateZ(0);
     will-change: transform;
-  }
-  .dbg {
-    position: absolute;
-    left: 4px;
-    bottom: 100%;
-    font-size: 10px;
-    font-family: monospace;
-    color: yellow;
-    background: rgba(0,0,0,0.6);
-    padding: 2px 4px;
-    pointer-events: none;
   }
   .nav {
     background: var(--bg-2);
