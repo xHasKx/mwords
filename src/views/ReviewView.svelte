@@ -5,6 +5,7 @@
   import { defaultSrs } from '../lib/types.ts';
   import ReviewCard from '../components/ReviewCard.svelte';
   import GradeButtons from '../components/GradeButtons.svelte';
+  import ReviewScopePicker from '../components/ReviewScopePicker.svelte';
   import type { Grade } from '../lib/types.ts';
 
   let revealed = $state(false);
@@ -83,6 +84,9 @@
 </script>
 
 <div class="col">
+  {#if app.decks.size > 0}
+    <ReviewScopePicker />
+  {/if}
   <div class="counter muted" aria-live="polite">Reviewed: {reviewed}</div>
   {#if app.scopedWords.length === 0}
     <div class="card muted">
