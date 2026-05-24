@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { app } from '../lib/stores/app.svelte.ts';
   import { pickNext } from '../lib/srs/picker.ts';
-  import { defaultSrs } from '../lib/types.ts';
+  import { DEFAULT_REPEAT_HOURS, defaultSrs } from '../lib/types.ts';
   import ReviewCard from '../components/ReviewCard.svelte';
   import GradeButtons from '../components/GradeButtons.svelte';
   import ReviewScopePicker from '../components/ReviewScopePicker.svelte';
@@ -98,7 +98,11 @@
   {:else if current}
     <ReviewCard {front} {back} {revealed} onReveal={() => (revealed = true)} />
     {#if revealed}
-      <GradeButtons srs={app.srs.get(current.id) ?? defaultSrs(current.id)} {onGrade} />
+      <GradeButtons
+        srs={app.srs.get(current.id) ?? defaultSrs(current.id)}
+        repeatHours={app.settings.repeatHours ?? DEFAULT_REPEAT_HOURS}
+        {onGrade}
+      />
     {/if}
   {:else}
     <div class="card muted">

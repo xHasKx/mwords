@@ -2,8 +2,8 @@
   import type { Grade, SrsState } from '../lib/types.ts';
   import { nextIntervalDaysFor } from '../lib/srs/sm2.ts';
 
-  type Props = { srs: SrsState; onGrade: (g: Grade) => void };
-  let { srs, onGrade }: Props = $props();
+  type Props = { srs: SrsState; repeatHours: number; onGrade: (g: Grade) => void };
+  let { srs, repeatHours, onGrade }: Props = $props();
 
   const labels: { g: Grade; text: string }[] = [
     { g: 'again', text: 'Again' },
@@ -14,7 +14,11 @@
 
   function summary(g: Grade): string {
     const d = nextIntervalDaysFor(srs, g);
-    return d === 0 ? 'now' : `${d}d`;
+    if (d === 0) return 'now';
+    // Display the projected interval in raw hours (intervalDays * repeatHours),
+    // never folded into days. The SM-2 "day" is configurable now, so a
+    // generic 'h' label keeps the units consistent across settings.
+    return `${d * repeatHours}h`;
   }
 </script>
 
