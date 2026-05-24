@@ -87,7 +87,9 @@
   {#if app.decks.size > 0}
     <ReviewScopePicker />
   {/if}
-  <div class="counter muted" aria-live="polite">Reviewed: {reviewed}</div>
+  <div class="counter muted" aria-live="polite">
+    Reviewed: {reviewed} / {app.scopedWords.length} Total
+  </div>
   {#if app.scopedWords.length === 0}
     <div class="card muted">
       <p>No words in this scope.</p>
