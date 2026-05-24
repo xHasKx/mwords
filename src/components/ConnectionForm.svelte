@@ -50,6 +50,35 @@
     if (!confirm(`Discard ${count} pending change${count === 1 ? '' : 's'}? They will not be sent to the broker.`)) return;
     void queue.clear();
   }
+
+  function cancel() {
+    app.disconnect();
+  }
+
+  // Tick once a second while a reconnect countdown is showing.
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    if (app.connection !== 'reconnecting' || app.nextAttemptAt === null) return;
+    nowTick = Date.now();
+    const id = setInterval(() => (nowTick = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+
+  const inFlight = $derived(
+    app.connection === 'connecting' || app.connection === 'reconnecting',
+  );
+
+  const statusText = $derived.by(() => {
+    if (app.connection === 'reconnecting') {
+      if (app.nextAttemptAt !== null) {
+        const secs = Math.max(0, Math.ceil((app.nextAttemptAt - nowTick) / 1000));
+        return `Reconnecting in ${secs}s…`;
+      }
+      return 'Reconnecting…';
+    }
+    if (app.connection === 'connecting') return 'Connecting…';
+    return null;
+  });
 </script>
 
 <form class="col" onsubmit={submit}>
@@ -80,7 +109,20 @@
     <span>Autoconnect on page load</span>
   </label>
   {#if error}<div class="error">{error}</div>{/if}
-  <button type="submit" class="primary">Save &amp; connect</button>
+  {#if !inFlight && app.connectionError}
+    <div class="error" role="status">{app.connectionError}</div>
+  {/if}
+  {#if inFlight}
+    <button type="button" class="danger" onclick={cancel}>Cancel</button>
+    {#if statusText}
+      <div class="status" role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>{statusText}</span>
+      </div>
+    {/if}
+  {:else}
+    <button type="submit" class="primary">Save &amp; connect</button>
+  {/if}
   {#if queueStore.pendingCount > 0}
     <button type="button" class="danger" onclick={clearPending}>
       Clear pending queue ({queueStore.pendingCount})
@@ -108,5 +150,25 @@
     padding: 0.6rem 0.85rem;
     font-size: 0.9rem;
     color: var(--fg-2);
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--fg-2);
+  }
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
   }
 </style>
