@@ -823,11 +823,15 @@ class AppStore {
     const filename = exportFilename();
     triggerDownload(filename, JSON.stringify(payload));
     let wordCount = 0;
-    for (const g of payload.groups) wordCount += g.words.length;
+    for (const g of payload.groups) {
+      for (const d of g.decks) wordCount += d.words.length;
+    }
     return { filename, groupCount: payload.groups.length, wordCount };
   }
 
-  async importAll(fileText: string): Promise<{ groupCount: number; wordCount: number }> {
+  async importAll(
+    fileText: string,
+  ): Promise<{ groupCount: number; deckCount: number; wordCount: number }> {
     if (!this.storedConn) throw new Error('not connected');
     if (this.connection !== 'connected') {
       throw new Error('Connect to the broker before importing.');
@@ -836,19 +840,32 @@ class AppStore {
     if (!parsed.ok) throw new Error(parsed.error);
     const prefix = this.storedConn.prefix;
 
-    // Build a "name → existing gid" lookup so duplicate-name groups
-    // from the file land in the existing local row instead of
-    // creating yet another. Existing local words are preserved
-    // (no dedup by text/translation — design.md "Import").
+    // Group dedup: every group name in the local store maps to its gid.
+    // Phase-1 subscribe keeps groups discovered across all the broker,
+    // so this lookup is authoritative.
     const groupsByName = new Map<string, string>();
     for (const [gid, g] of this.groups) {
       const n = g.name.trim();
       if (!groupsByName.has(n)) groupsByName.set(n, gid);
     }
 
-    // Single monotonic counter so every group / word created during
-    // this import gets a unique id, even if the loop body runs in
-    // the same millisecond.
+    // Deck dedup: only the **active group**'s decks are loaded
+    // in-memory (phase-2 subscription scope), so dedup-by-name can
+    // only happen there. For imports into other groups, every imported
+    // deck is created fresh — re-importing the same file into a
+    // non-active group will produce duplicate decks. Acceptable v1
+    // limitation; the user can review and clean up if needed.
+    const activeDecksByName = new Map<string, string>();
+    if (this.activeGroupId) {
+      for (const [did, d] of this.decks) {
+        const n = d.name.trim();
+        if (!activeDecksByName.has(n)) activeDecksByName.set(n, did);
+      }
+    }
+
+    // Single monotonic counter so every group / deck / word created
+    // during this import gets a unique id, even if the loop body runs
+    // in the same millisecond.
     const baseTs = Date.now();
     let counter = 0;
     const nextId = (): { id: string; ts: number } => {
@@ -858,16 +875,17 @@ class AppStore {
     };
 
     let groupCount = 0;
+    let deckCount = 0;
     let wordCount = 0;
 
     for (const ig of parsed.file.groups) {
-      const name = ig.name.trim();
-      let targetGid = groupsByName.get(name);
+      const gName = ig.name.trim();
+      let targetGid = groupsByName.get(gName);
       if (!targetGid) {
         const { id: gid, ts } = nextId();
-        const group: Group = { id: gid, name, created: ts, updated: ts };
+        const group: Group = { id: gid, name: gName, created: ts, updated: ts };
         this.groups.set(gid, group);
-        groupsByName.set(name, gid);
+        groupsByName.set(gName, gid);
         try {
           await queue.publishIntent(groupTopic(prefix, gid), group);
         } catch (err) {
@@ -877,48 +895,63 @@ class AppStore {
         targetGid = gid;
         groupCount += 1;
       }
-      // v1 import files have no deck level. Slice 6 will adopt the v2
-      // file format; until then, every imported word lands in an
-      // auto-created "Imported" deck per group. Cheap workaround.
-      let targetDid: string;
-      {
-        const { id: did, ts } = nextId();
-        const deck: Deck = { id: did, name: 'Imported', created: ts, updated: ts };
-        if (this.activeGroupId === targetGid) this.decks.set(did, deck);
-        try {
-          await queue.publishIntent(deckTopic(prefix, targetGid, did), deck);
-        } catch (err) {
-          if (this.activeGroupId === targetGid) this.decks.delete(did);
-          throw err;
-        }
-        targetDid = did;
-      }
-      for (const iw of ig.words) {
-        const { id: wid, ts } = nextId();
-        const word: Word = {
-          id: wid,
-          text: iw.text,
-          translation: iw.translation,
-          created: ts,
-          updated: ts,
-        };
-        if (this.activeGroupId === targetGid) {
-          this.wordDeck.set(wid, targetDid);
-          this.words.set(wid, word);
-        }
-        try {
-          await queue.publishIntent(wordTopic(prefix, targetGid, targetDid, wid), word);
-        } catch (err) {
+
+      for (const id of ig.decks) {
+        const dName = id.name.trim();
+        // Reuse an existing deck only when the target group is the
+        // active one (its decks are loaded in-memory). Otherwise
+        // always create fresh.
+        const reuse = this.activeGroupId === targetGid ? activeDecksByName.get(dName) : undefined;
+        let targetDid: string;
+        if (reuse) {
+          targetDid = reuse;
+        } else {
+          const { id: did, ts } = nextId();
+          const deck: Deck = { id: did, name: dName, created: ts, updated: ts };
           if (this.activeGroupId === targetGid) {
-            this.words.delete(wid);
-            this.wordDeck.delete(wid);
+            this.decks.set(did, deck);
+            activeDecksByName.set(dName, did);
           }
-          throw err;
+          try {
+            await queue.publishIntent(deckTopic(prefix, targetGid, did), deck);
+          } catch (err) {
+            if (this.activeGroupId === targetGid) {
+              this.decks.delete(did);
+              activeDecksByName.delete(dName);
+            }
+            throw err;
+          }
+          targetDid = did;
+          deckCount += 1;
         }
-        wordCount += 1;
+
+        for (const iw of id.words) {
+          const { id: wid, ts } = nextId();
+          const word: Word = {
+            id: wid,
+            text: iw.text,
+            translation: iw.translation,
+            created: ts,
+            updated: ts,
+          };
+          if (this.activeGroupId === targetGid) {
+            this.wordDeck.set(wid, targetDid);
+            this.words.set(wid, word);
+          }
+          try {
+            await queue.publishIntent(wordTopic(prefix, targetGid, targetDid, wid), word);
+          } catch (err) {
+            if (this.activeGroupId === targetGid) {
+              this.words.delete(wid);
+              this.wordDeck.delete(wid);
+            }
+            throw err;
+          }
+          wordCount += 1;
+        }
       }
     }
-    return { groupCount, wordCount };
+    return { groupCount, deckCount, wordCount };
   }
 
   async selectGroup(gid: string): Promise<void> {

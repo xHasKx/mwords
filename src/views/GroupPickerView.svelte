@@ -129,7 +129,10 @@
     try {
       const text = await file.text();
       const r = await app.importAll(text);
-      portStatus = `Imported ${r.groupCount} new group${r.groupCount === 1 ? '' : 's'} and ${r.wordCount} word${r.wordCount === 1 ? '' : 's'}.`;
+      portStatus =
+        `Imported ${r.groupCount} new group${r.groupCount === 1 ? '' : 's'}, ` +
+        `${r.deckCount} new deck${r.deckCount === 1 ? '' : 's'}, and ` +
+        `${r.wordCount} word${r.wordCount === 1 ? '' : 's'}.`;
     } catch (err) {
       portStatus = null;
       portError = (err as Error).message;

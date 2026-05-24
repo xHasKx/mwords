@@ -1,6 +1,6 @@
 import type { StoredConnection } from './storage/credentials.ts';
 import { parseTopic } from './mqtt/topics.ts';
-import { isGroup, isWord } from './validators.ts';
+import { isDeck, isGroup, isWord } from './validators.ts';
 
 // Quiet-period that signals retained-replay drained. Mirrors the
 // 500 ms SUBACK debounce the live AppStore uses for "synced".
@@ -11,10 +11,12 @@ const DRAIN_QUIET_MS = 500;
 const TOTAL_TIMEOUT_MS = 30_000;
 
 export type ExportWord = { text: string; translation: string };
-export type ExportGroup = { name: string; words: ExportWord[] };
-export type ExportPayload = { version: 1; groups: ExportGroup[] };
+export type ExportDeck = { name: string; words: ExportWord[] };
+export type ExportGroup = { name: string; decks: ExportDeck[] };
+export type ExportPayload = { version: 2; groups: ExportGroup[] };
 
-type CaptureGroup = { name: string | null; words: Map<string, ExportWord> };
+type CaptureDeck = { name: string | null; words: Map<string, ExportWord> };
+type CaptureGroup = { name: string | null; decks: Map<string, CaptureDeck> };
 
 export async function exportAll(conn: StoredConnection): Promise<ExportPayload> {
   const mqtt = (await import('mqtt')).default;
@@ -52,16 +54,22 @@ export async function exportAll(conn: StoredConnection): Promise<ExportPayload> 
         reject(err);
         return;
       }
-      const out: ExportPayload = { version: 1, groups: [] };
+      const out: ExportPayload = { version: 2, groups: [] };
       for (const g of capture.values()) {
         // A group whose marker we never saw (or saw as a tombstone)
         // is dropped — without a name, we have no way to label it
         // in the export.
         if (g.name === null) continue;
-        out.groups.push({
-          name: g.name,
-          words: Array.from(g.words.values()),
-        });
+        const decks: ExportDeck[] = [];
+        for (const d of g.decks.values()) {
+          // Same drop logic for decks; also skip decks with no words
+          // since the file is for seeding *content*.
+          if (d.name === null) continue;
+          if (d.words.size === 0) continue;
+          decks.push({ name: d.name, words: Array.from(d.words.values()) });
+        }
+        if (decks.length === 0) continue;
+        out.groups.push({ name: g.name, decks });
       }
       resolve(out);
     }
@@ -75,8 +83,18 @@ export async function exportAll(conn: StoredConnection): Promise<ExportPayload> 
     function ensureGroup(gid: string): CaptureGroup {
       let cur = capture.get(gid);
       if (!cur) {
-        cur = { name: null, words: new Map() };
+        cur = { name: null, decks: new Map() };
         capture.set(gid, cur);
+      }
+      return cur;
+    }
+
+    function ensureDeck(gid: string, did: string): CaptureDeck {
+      const g = ensureGroup(gid);
+      let cur = g.decks.get(did);
+      if (!cur) {
+        cur = { name: null, words: new Map() };
+        g.decks.set(did, cur);
       }
       return cur;
     }
@@ -92,8 +110,8 @@ export async function exportAll(conn: StoredConnection): Promise<ExportPayload> 
       if (parsed.kind === 'group') {
         if (payload.byteLength === 0) {
           // Tombstone on the group marker — drop the whole group
-          // (its words/srs subtree is implicitly meaningless without
-          // the marker).
+          // (its decks / words subtree is implicitly meaningless
+          // without the marker).
           capture.delete(parsed.gid);
         } else {
           try {
@@ -105,15 +123,30 @@ export async function exportAll(conn: StoredConnection): Promise<ExportPayload> 
             // Malformed payload — ignore, like the live handler.
           }
         }
-      } else if (parsed.kind === 'word') {
-        const g = ensureGroup(parsed.gid);
+      } else if (parsed.kind === 'deck') {
         if (payload.byteLength === 0) {
-          g.words.delete(parsed.id);
+          // Deck tombstone — drop just this deck (its words subtree
+          // is meaningless without the marker).
+          ensureGroup(parsed.gid).decks.delete(parsed.did);
+        } else {
+          try {
+            const data = JSON.parse(new TextDecoder().decode(payload));
+            if (isDeck(data, parsed.did)) {
+              ensureDeck(parsed.gid, parsed.did).name = data.name;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } else if (parsed.kind === 'word') {
+        const d = ensureDeck(parsed.gid, parsed.did);
+        if (payload.byteLength === 0) {
+          d.words.delete(parsed.id);
         } else {
           try {
             const data = JSON.parse(new TextDecoder().decode(payload));
             if (isWord(data, parsed.id)) {
-              g.words.set(parsed.id, { text: data.text, translation: data.translation });
+              d.words.set(parsed.id, { text: data.text, translation: data.translation });
             }
           } catch {
             // ignore
