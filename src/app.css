@@ -42,6 +42,7 @@ html, body {
   line-height: 1.4;
   min-height: 100vh;
   overflow-x: hidden;
+  overscroll-behavior-y: contain;
 }
 
 button, input, textarea, select {
