@@ -8,32 +8,33 @@
 
   let wrapEl: HTMLDivElement | null = $state(null);
   let dbg = $state('');
+  // The largest innerHeight observed so far — proxy for the
+  // URL-bar-collapsed (lvh) viewport. Firefox on Android anchors
+  // position:fixed;bottom:0 to this even when the URL bar is up and
+  // the current layout viewport is shorter — leaving a gap between
+  // the nav and the visible bottom. Translate DOWN by (lvh - ih) to
+  // close it.
+  let lvh = 0;
 
-  // Firefox on Android anchors position: fixed; bottom: 0 to a layout
-  // viewport whose bottom differs from the visible-viewport bottom
-  // while the URL bar is up. Read the visible bottom via the
-  // visualViewport API and translate the wrapper by the signed delta
-  // — positive moves down, negative moves up. On browsers where the
-  // two viewports agree, the delta is 0 and this is a no-op.
   $effect(() => {
     if (typeof window === 'undefined') return;
-    const vv = window.visualViewport;
-    if (!vv) return;
     function sync() {
-      if (!wrapEl || !vv) return;
+      if (!wrapEl) return;
       const ih = window.innerHeight;
-      const vt = vv.offsetTop;
-      const vh = vv.height;
-      const delta = vt + vh - ih;
-      wrapEl.style.transform = `translate3d(0, ${delta}px, 0)`;
-      dbg = `ih=${ih} vt=${Math.round(vt)} vh=${Math.round(vh)} d=${Math.round(delta)}`;
+      if (ih > lvh) lvh = ih;
+      const lift = Math.max(0, lvh - ih);
+      wrapEl.style.transform = `translate3d(0, ${lift}px, 0)`;
+      dbg = `ih=${ih} lvh=${lvh} lift=${lift}`;
     }
     sync();
-    vv.addEventListener('resize', sync);
-    vv.addEventListener('scroll', sync);
+    window.addEventListener('resize', sync);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', sync);
+    vv?.addEventListener('scroll', sync);
     return () => {
-      vv.removeEventListener('resize', sync);
-      vv.removeEventListener('scroll', sync);
+      window.removeEventListener('resize', sync);
+      vv?.removeEventListener('resize', sync);
+      vv?.removeEventListener('scroll', sync);
     };
   });
 </script>
