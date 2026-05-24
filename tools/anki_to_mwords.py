@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert an Anki text export into an mwords v1 import JSON file.
+"""Convert an Anki text export into an mwords v2 import JSON file.
 
 Anki's "Notes in Plain Text (.txt)" export looks like:
 
@@ -9,14 +9,22 @@ Anki's "Notes in Plain Text (.txt)" export looks like:
     #tags column:4
     deckName<TAB>front<TAB>back<TAB>tags
 
-The deck/tags columns are optional. When `#deck column:N` is absent the
-whole file belongs to a single deck whose name is taken from
-`--default-group` (or the input filename's stem). HTML is stripped from
+The deck/tags columns are optional. When `#deck column:N` is present each
+row's deck-column value becomes an mwords **deck** name; when it's absent
+the whole file lands in a single deck whose name comes from
+`--default-deck` (or the input filename's stem). HTML is stripped from
 `text`/`translation` when `#html:true` is set.
 
-The output JSON matches docs/design.md → "Export and import":
+The output always contains **one mwords group** — its name is the
+required `--group` argument — and one or more decks under it. v2 schema
+matches docs/design.md → "Export and import":
 
-    {"version": 1, "groups": [{"name": ..., "words": [{"text": ..., "translation": ...}]}]}
+    {"version": 2, "groups": [
+      {"name": <group>, "decks": [
+        {"name": <deck>, "words": [{"text": ..., "translation": ...}, ...]},
+        ...
+      ]}
+    ]}
 """
 
 from __future__ import annotations
@@ -102,7 +110,8 @@ def normalise_cell(value: str, html: bool) -> str:
 
 def convert(
     lines: list[str],
-    default_group: str,
+    group: str,
+    default_deck: str,
 ) -> dict:
     headers, start = parse_headers(lines)
     sep = resolve_separator(headers)
@@ -110,9 +119,9 @@ def convert(
     deck_col = one_based(headers, "deck column")
     tags_col = one_based(headers, "tags column")
 
-    # Groups indexed by name, in first-seen order, so the output preserves the
+    # Decks indexed by name, in first-seen order, so the output preserves the
     # natural order of decks as they appear in the Anki file.
-    groups: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
+    decks: "OrderedDict[str, list[dict[str, str]]]" = OrderedDict()
 
     for lineno, raw in enumerate(lines[start:], start=start + 1):
         # Skip stray comments / blank lines mid-file. Anki doesn't normally
@@ -127,7 +136,7 @@ def convert(
                     f"line {lineno}: expected at least {deck_col} columns for "
                     f"the deck column, got {len(cells)}"
                 )
-            group_name = normalise_cell(cells[deck_col - 1], html=False)
+            deck_name = normalise_cell(cells[deck_col - 1], html=False)
             content = [c for i, c in enumerate(cells, start=1) if i != deck_col]
             if tags_col is not None and tags_col != deck_col:
                 # Drop the tags column from the content too, accounting for the
@@ -136,7 +145,7 @@ def convert(
                 if 1 <= adjusted <= len(content):
                     content.pop(adjusted - 1)
         else:
-            group_name = default_group
+            deck_name = default_deck
             content = list(cells)
             if tags_col is not None and 1 <= tags_col <= len(content):
                 content.pop(tags_col - 1)
@@ -152,17 +161,23 @@ def convert(
         if not text or not translation:
             # Skip half-empty rows rather than importing blanks.
             continue
-        if not group_name:
+        if not deck_name:
             raise ParseError(f"line {lineno}: deck column is empty")
 
-        groups.setdefault(group_name, []).append(
+        decks.setdefault(deck_name, []).append(
             {"text": text, "translation": translation}
         )
 
     return {
-        "version": 1,
+        "version": 2,
         "groups": [
-            {"name": name, "words": words} for name, words in groups.items()
+            {
+                "name": group,
+                "decks": [
+                    {"name": name, "words": words}
+                    for name, words in decks.items()
+                ],
+            }
         ],
     }
 
@@ -170,8 +185,9 @@ def convert(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert an Anki tab-separated text export into an mwords v1 "
-            "import JSON file."
+            "Convert an Anki tab-separated text export into an mwords v2 "
+            "import JSON file. Always produces a single group; each row's "
+            "deck-column value (or --default-deck) becomes a deck under it."
         )
     )
     parser.add_argument(
@@ -180,16 +196,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the Anki .txt export.",
     )
     parser.add_argument(
+        "-g",
+        "--group",
+        required=True,
+        help="Name of the (single) mwords group to wrap all decks under.",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         type=Path,
         help="Output JSON path. Defaults to stdout.",
     )
     parser.add_argument(
-        "--default-group",
+        "--default-deck",
         default=None,
         help=(
-            "Group name to use when the file has no `#deck column:` header. "
+            "Deck name to use when the file has no `#deck column:` header. "
             "Defaults to the input filename's stem."
         ),
     )
@@ -209,10 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     # splitlines() handles \n, \r\n, and \r uniformly and drops the trailing
     # newline so we don't get a phantom empty record.
     lines = text.splitlines()
-    default_group = args.default_group or args.input.stem
+    default_deck = args.default_deck or args.input.stem
+    group = args.group.strip()
+    if not group:
+        print("error: --group must be a non-empty name", file=sys.stderr)
+        return 1
 
     try:
-        result = convert(lines, default_group=default_group)
+        result = convert(lines, group=group, default_deck=default_deck)
     except ParseError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -224,10 +250,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
-        groups = len(result["groups"])
-        words = sum(len(g["words"]) for g in result["groups"])
+        decks = sum(len(g["decks"]) for g in result["groups"])
+        words = sum(
+            len(d["words"]) for g in result["groups"] for d in g["decks"]
+        )
         print(
-            f"wrote {args.output} — {groups} group(s), {words} word(s)",
+            f"wrote {args.output} — 1 group, {decks} deck(s), {words} word(s)",
             file=sys.stderr,
         )
     else:
