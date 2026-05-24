@@ -6,18 +6,20 @@ import {
   groupsFilter,
   settingsTopic,
   groupTopic,
+  decksFilter,
+  deckTopic,
   wordsFilter,
   srsFilter,
   wordTopic,
   srsTopic,
 } from '../mqtt/topics.ts';
-import type { Group, Settings, SrsState, Word, Grade } from '../types.ts';
+import type { Deck, Group, ReviewScope, Settings, SrsState, Word, Grade } from '../types.ts';
 import { defaultSettings, defaultSrs } from '../types.ts';
 import { applyGrade } from '../srs/picker.ts';
 import * as creds from '../storage/credentials.ts';
 import type { StoredConnection } from '../storage/credentials.ts';
 import { queue } from '../mqtt/queue.ts';
-import { isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
+import { isDeck, isGroup, isWord, isSrsState, isSettings } from '../validators.ts';
 import { decodeShare, encodeShare, type SharePayload } from '../share.ts';
 import { exportAll as exportAllOverNewClient, exportFilename, triggerDownload } from '../export.ts';
 import { parseImportFile } from '../import.ts';
@@ -51,8 +53,60 @@ class AppStore {
   settings = $state<Settings>(defaultSettings());
 
   activeGroupId = $state<string | null>(null);
+  activeDeckId = $state<string | null>(null);
+  reviewScope = $state<ReviewScope>({ kind: 'active-deck' });
+
+  // Active-group scoped. Words and srs are stored flat (keyed by wordId);
+  // the per-word deck is tracked in wordDeck so publishes know which
+  // <P>/g/<G>/d/<D>/... topic to target. wordDeck is non-reactive on
+  // purpose — every mutation is paired with a words.set/.delete that
+  // already drives reactivity, and reading wordDeck during a derived
+  // computation should not register an extra dependency.
+  decks = new SvelteMap<string, Deck>();
   words = new SvelteMap<string, Word>();
   srs = new SvelteMap<string, SrsState>();
+  private wordDeck = new Map<string, string>();
+
+  // Scope-filtered view of the active group's words. Review feeds this
+  // to the picker; Edit shows only the active deck. Both are $derived
+  // off reactive state (reviewScope, activeDeckId, words). wordDeck is
+  // read untracked, but every mutation to it is paired with a
+  // this.words.set/.delete, so words drives the re-derivation.
+  scopedWords = $derived.by((): Word[] => this.computeScopedWords());
+  activeDeckWords = $derived.by((): Word[] => this.computeActiveDeckWords());
+
+  private computeScopedWords(): Word[] {
+    const scope = this.reviewScope;
+    // Strict discovery: a word is only in scope if its parent deck has
+    // a published marker (live in `this.decks`). Words whose deck marker
+    // hasn't arrived yet (or was tombstoned by a peer) are filtered.
+    const allowed: Set<string> | null =
+      scope.kind === 'group'
+        ? null
+        : scope.kind === 'active-deck'
+          ? this.activeDeckId
+            ? new Set([this.activeDeckId])
+            : new Set()
+          : new Set(scope.deckIds);
+    const out: Word[] = [];
+    for (const w of this.words.values()) {
+      const did = this.wordDeck.get(w.id);
+      if (did === undefined || !this.decks.has(did)) continue;
+      if (allowed !== null && !allowed.has(did)) continue;
+      out.push(w);
+    }
+    return out;
+  }
+
+  private computeActiveDeckWords(): Word[] {
+    const did = this.activeDeckId;
+    if (!did || !this.decks.has(did)) return [];
+    const out: Word[] = [];
+    for (const w of this.words.values()) {
+      if (this.wordDeck.get(w.id) === did) out.push(w);
+    }
+    return out;
+  }
 
   view = $state<View>('connect');
   switching = $state(false);
@@ -82,6 +136,7 @@ class AppStore {
   // step 9, "Tombstone watermark".
   private wordWatermark = new Map<string, number>();
   private srsWatermark = new Map<string, number>();
+  private deckWatermark = new Map<string, number>();
 
   private syncResolve: (() => void) | null = null;
   private syncTimer: number | null = null;
@@ -223,11 +278,16 @@ class AppStore {
     this.storedConn = merged;
     this.connectionError = null;
     this.groups.clear();
+    this.decks.clear();
     this.words.clear();
     this.srs.clear();
+    this.wordDeck.clear();
     this.wordWatermark.clear();
     this.srsWatermark.clear();
+    this.deckWatermark.clear();
     this.activeGroupId = null;
+    this.activeDeckId = null;
+    this.reviewScope = { kind: 'active-deck' };
     this.settings = defaultSettings();
 
     this.mqtt?.disconnect();
@@ -247,11 +307,16 @@ class AppStore {
     this.mqtt?.disconnect();
     this.mqtt = null;
     this.groups.clear();
+    this.decks.clear();
     this.words.clear();
     this.srs.clear();
+    this.wordDeck.clear();
     this.wordWatermark.clear();
     this.srsWatermark.clear();
+    this.deckWatermark.clear();
     this.activeGroupId = null;
+    this.activeDeckId = null;
+    this.reviewScope = { kind: 'active-deck' };
     this.settings = defaultSettings();
     this.connection = 'idle';
     this.connectionError = null;
@@ -302,6 +367,7 @@ class AppStore {
     // case where phase-2 was deferred until first connect).
     if (this.activeGroupId) {
       await this.subscribeAndSync([
+        decksFilter(prefix, this.activeGroupId),
         wordsFilter(prefix, this.activeGroupId),
         srsFilter(prefix, this.activeGroupId),
       ]);
@@ -389,15 +455,44 @@ class AppStore {
     // the raw UP; no JSON.parse, no type guard.
     if (payload.byteLength === 0) {
       if (parsed.kind === 'word') {
+        if (this.activeGroupId !== parsed.gid) return;
         const local = this.words.get(parsed.id);
         if (!this.acceptByGate(local?.updated, this.wordWatermark.get(parsed.id), up)) return;
+        this.wordDeck.delete(parsed.id);
         this.words.delete(parsed.id);
         if (up !== null) this.wordWatermark.set(parsed.id, up);
       } else if (parsed.kind === 'srs') {
+        if (this.activeGroupId !== parsed.gid) return;
         const local = this.srs.get(parsed.id);
         if (!this.acceptByGate(local?.updated, this.srsWatermark.get(parsed.id), up)) return;
         this.srs.delete(parsed.id);
         if (up !== null) this.srsWatermark.set(parsed.id, up);
+      } else if (parsed.kind === 'deck') {
+        if (this.activeGroupId !== parsed.gid) return;
+        const local = this.decks.get(parsed.did);
+        if (!this.acceptByGate(local?.updated, this.deckWatermark.get(parsed.did), up)) return;
+        this.decks.delete(parsed.did);
+        if (up !== null) this.deckWatermark.set(parsed.did, up);
+        // Prune child words/srs locally and seed watermarks so a peer's
+        // queued-while-offline content publish for one of these ids can't
+        // slip past the LWW gate (no local record + no watermark = the
+        // gate accepts the resurrection). The flespi-style subtree
+        // tombstone may already be wiping these at the broker too, but
+        // we don't rely on it.
+        const seed = up ?? Date.now() / 1000;
+        for (const [wid, did] of this.wordDeck) {
+          if (did !== parsed.did) continue;
+          this.wordDeck.delete(wid);
+          this.words.delete(wid);
+          this.srs.delete(wid);
+          this.wordWatermark.set(wid, seed);
+          this.srsWatermark.set(wid, seed);
+        }
+        if (this.activeDeckId === parsed.did) {
+          this.activeDeckId = null;
+          this.reviewScope = { kind: 'active-deck' };
+          creds.clearLastDeck();
+        }
       } else if (parsed.kind === 'group') {
         const local = this.groups.get(parsed.gid);
         if (!this.acceptByGate(local?.updated, undefined, up)) return;
@@ -429,6 +524,16 @@ class AppStore {
       }
       if (!this.acceptByGate(this.settings.updated, undefined, up)) return;
       this.settings = data;
+    } else if (parsed.kind === 'deck') {
+      if (this.activeGroupId !== parsed.gid) return;
+      if (!isDeck(data, parsed.did)) {
+        console.warn('mwords: invalid Deck at', topic);
+        return;
+      }
+      const local = this.decks.get(data.id);
+      if (!this.acceptByGate(local?.updated, this.deckWatermark.get(data.id), up)) return;
+      this.decks.set(data.id, data);
+      this.deckWatermark.delete(data.id);
     } else if (parsed.kind === 'word') {
       if (this.activeGroupId !== parsed.gid) return;
       if (!isWord(data, parsed.id)) {
@@ -437,9 +542,10 @@ class AppStore {
       }
       const local = this.words.get(data.id);
       if (!this.acceptByGate(local?.updated, this.wordWatermark.get(data.id), up)) return;
+      // Update the reverse index BEFORE the reactive words map so any
+      // derived that reads both sees a consistent snapshot.
+      this.wordDeck.set(data.id, parsed.did);
       this.words.set(data.id, data);
-      // Content accepted → drop watermark (the local record's own
-      // `updated` is now the comparison point).
       this.wordWatermark.delete(data.id);
     } else if (parsed.kind === 'srs') {
       if (this.activeGroupId !== parsed.gid) return;
@@ -497,6 +603,107 @@ class AppStore {
     }
   }
 
+  async createDeck(name: string): Promise<string> {
+    if (!this.storedConn || !this.activeGroupId) throw new Error('no active group');
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('name required');
+    const tmNow = Date.now();
+    const id = tmNow.toString();
+    const ts = tmNow / 1000;
+    const deck: Deck = { id, name: trimmed, created: ts, updated: ts };
+    this.decks.set(id, deck);
+    try {
+      await queue.publishIntent(deckTopic(this.storedConn.prefix, this.activeGroupId, id), deck);
+    } catch (err) {
+      this.decks.delete(id);
+      this.publishError = (err as Error).message;
+      throw err;
+    }
+    return id;
+  }
+
+  async renameDeck(id: string, name: string): Promise<void> {
+    if (!this.storedConn || !this.activeGroupId) throw new Error('no active group');
+    const existing = this.decks.get(id);
+    if (!existing) throw new Error('deck missing');
+    const trimmed = name.trim();
+    if (trimmed.length < 1 || trimmed.length > 256) {
+      throw new Error('name must be 1-256 chars');
+    }
+    if (trimmed === existing.name) return;
+    const next: Deck = { ...existing, name: trimmed, updated: Date.now() / 1000 };
+    this.decks.set(id, next);
+    try {
+      await queue.publishIntent(deckTopic(this.storedConn.prefix, this.activeGroupId, id), next);
+    } catch (err) {
+      this.decks.set(id, existing);
+      this.publishError = (err as Error).message;
+      throw err;
+    }
+  }
+
+  async deleteDeck(id: string): Promise<void> {
+    if (!this.storedConn || !this.activeGroupId) throw new Error('no active group');
+    const existing = this.decks.get(id);
+    if (!existing) return;
+    const prefix = this.storedConn.prefix;
+    const gid = this.activeGroupId;
+
+    // Optimistic local cleanup. Mirror Group deletion: subtree wipe via
+    // the broker-specific `#`-tombstone, then the marker.
+    this.decks.delete(id);
+    // Prune words/srs that lived under this deck from the local store
+    // and seed per-id watermarks. Without seeds, a peer's queued-while-
+    // offline content publish for one of these ids could slip past the
+    // gate (no local record + no watermark = accept) before our subtree
+    // tombstone publishes lands.
+    const seed = Date.now() / 1000;
+    for (const [wid, did] of this.wordDeck) {
+      if (did !== id) continue;
+      this.wordDeck.delete(wid);
+      this.words.delete(wid);
+      this.srs.delete(wid);
+      this.wordWatermark.set(wid, seed);
+      this.srsWatermark.set(wid, seed);
+    }
+    if (this.activeDeckId === id) {
+      this.activeDeckId = null;
+      this.reviewScope = { kind: 'active-deck' };
+      creds.clearLastDeck();
+    } else if (this.reviewScope.kind === 'decks') {
+      const filtered = this.reviewScope.deckIds.filter((d) => d !== id);
+      this.reviewScope =
+        filtered.length > 0 ? { kind: 'decks', deckIds: filtered } : { kind: 'active-deck' };
+      creds.update({ lastReviewScope: this.reviewScope });
+    }
+
+    try {
+      await queue.publishTombstone(`${prefix}/g/${gid}/d/${id}/#`);
+      await queue.publishTombstone(deckTopic(prefix, gid, id));
+    } catch (err) {
+      this.publishError = (err as Error).message;
+      throw err;
+    }
+  }
+
+  selectDeck(id: string): void {
+    if (!this.decks.has(id)) return;
+    this.activeDeckId = id;
+    this.reviewScope = { kind: 'active-deck' };
+    creds.update({ lastDeck: id, lastReviewScope: { kind: 'active-deck' } });
+  }
+
+  setReviewScope(scope: ReviewScope): void {
+    // Multi-deck scopes are filtered against the live decks store so
+    // stale ids don't survive a peer-side delete.
+    if (scope.kind === 'decks') {
+      const filtered = scope.deckIds.filter((d) => this.decks.has(d));
+      scope = filtered.length > 0 ? { kind: 'decks', deckIds: filtered } : { kind: 'active-deck' };
+    }
+    this.reviewScope = scope;
+    creds.update({ lastReviewScope: scope });
+  }
+
   async deleteGroup(id: string): Promise<void> {
     if (!this.storedConn) throw new Error('not connected');
     const existing = this.groups.get(id);
@@ -510,11 +717,19 @@ class AppStore {
     this.groups.delete(id);
     if (wasActive) {
       if (this.mqtt?.isConnected() === true) {
-        await this.mqtt.unsubscribeMany([wordsFilter(prefix, id), srsFilter(prefix, id)]);
+        await this.mqtt.unsubscribeMany([
+          decksFilter(prefix, id),
+          wordsFilter(prefix, id),
+          srsFilter(prefix, id),
+        ]);
       }
+      this.decks.clear();
       this.words.clear();
       this.srs.clear();
+      this.wordDeck.clear();
       this.activeGroupId = null;
+      this.activeDeckId = null;
+      this.reviewScope = { kind: 'active-deck' };
       creds.clearLastGroup();
       // The "return to previous view" handle is dead — that view referenced
       // the now-deleted group. Replace the current picker entry to drop it
@@ -610,6 +825,22 @@ class AppStore {
         targetGid = gid;
         groupCount += 1;
       }
+      // v1 import files have no deck level. Slice 6 will adopt the v2
+      // file format; until then, every imported word lands in an
+      // auto-created "Imported" deck per group. Cheap workaround.
+      let targetDid: string;
+      {
+        const { id: did, ts } = nextId();
+        const deck: Deck = { id: did, name: 'Imported', created: ts, updated: ts };
+        if (this.activeGroupId === targetGid) this.decks.set(did, deck);
+        try {
+          await queue.publishIntent(deckTopic(prefix, targetGid, did), deck);
+        } catch (err) {
+          if (this.activeGroupId === targetGid) this.decks.delete(did);
+          throw err;
+        }
+        targetDid = did;
+      }
       for (const iw of ig.words) {
         const { id: wid, ts } = nextId();
         const word: Word = {
@@ -620,12 +851,16 @@ class AppStore {
           updated: ts,
         };
         if (this.activeGroupId === targetGid) {
+          this.wordDeck.set(wid, targetDid);
           this.words.set(wid, word);
         }
         try {
-          await queue.publishIntent(wordTopic(prefix, targetGid, wid), word);
+          await queue.publishIntent(wordTopic(prefix, targetGid, targetDid, wid), word);
         } catch (err) {
-          if (this.activeGroupId === targetGid) this.words.delete(wid);
+          if (this.activeGroupId === targetGid) {
+            this.words.delete(wid);
+            this.wordDeck.delete(wid);
+          }
           throw err;
         }
         wordCount += 1;
@@ -637,22 +872,50 @@ class AppStore {
   async selectGroup(gid: string): Promise<void> {
     if (!this.storedConn) return;
     const prefix = this.storedConn.prefix;
+    // Snapshot view at entry — a popstate during the subscribe await
+    // could otherwise flip view to 'connect' (or another) and route the
+    // transition through the wrong intent shape (push vs replace).
+    const entryView = this.view;
+    const previousGid = this.activeGroupId;
+    const isSwitch = previousGid !== null && previousGid !== gid;
     this.switching = true;
     try {
       const connected = this.mqtt?.isConnected() === true;
-      if (connected && this.activeGroupId && this.activeGroupId !== gid) {
+      if (connected && isSwitch) {
         await this.mqtt!.unsubscribeMany([
-          wordsFilter(prefix, this.activeGroupId),
-          srsFilter(prefix, this.activeGroupId),
+          decksFilter(prefix, previousGid!),
+          wordsFilter(prefix, previousGid!),
+          srsFilter(prefix, previousGid!),
         ]);
       }
+      this.decks.clear();
       this.words.clear();
       this.srs.clear();
+      this.wordDeck.clear();
       this.activeGroupId = gid;
+      if (isSwitch) {
+        // Switching groups invalidates the previous group's lastDeck /
+        // lastReviewScope. Clear them in storage explicitly (the
+        // separate clearLastDeck() also strips lastReviewScope), then
+        // write the new lastGroup. This avoids relying on JSON.stringify
+        // to drop `undefined` props from a combined `creds.update`.
+        this.activeDeckId = null;
+        this.reviewScope = { kind: 'active-deck' };
+        creds.clearLastDeck();
+      }
       creds.update({ lastGroup: gid });
       if (connected) {
-        await this.subscribeAndSync([wordsFilter(prefix, gid), srsFilter(prefix, gid)]);
+        await this.subscribeAndSync([
+          decksFilter(prefix, gid),
+          wordsFilter(prefix, gid),
+          srsFilter(prefix, gid),
+        ]);
       }
+      // Restore lastDeck / lastReviewScope if they survive the new group.
+      // For a switch we just cleared them above; for the initial select
+      // (called from afterPhase1 with a resolved lastGroup), the stored
+      // values may belong to *this* group.
+      if (!isSwitch) this.restoreActiveDeck();
       // Else: offline — defer the subscribe. afterConnect on the next
       // successful connect will subscribe phase-2 for activeGroupId.
       //
@@ -661,13 +924,36 @@ class AppStore {
       // walk past it. From the connect form (autoconnect with a
       // resolved lastGroup), push — so back from review returns to
       // the connect form per the design's "connect form poppable" rule.
-      if (this.view === 'connect') {
+      if (entryView === 'connect') {
         this.pushIntent({ view: 'review' });
       } else {
         this.replaceIntent({ view: 'review' });
       }
     } finally {
       this.switching = false;
+    }
+  }
+
+  // After SUBACK + debounce, the decks store reflects retained replay.
+  // Try to restore the persisted active deck and review scope.
+  private restoreActiveDeck(): void {
+    const stored = creds.read();
+    if (!stored) return;
+    const lastDeck = stored.lastDeck;
+    if (lastDeck && this.decks.has(lastDeck)) {
+      this.activeDeckId = lastDeck;
+    } else if (lastDeck) {
+      // Stale lastDeck (deck deleted on another device, or new prefix).
+      creds.clearLastDeck();
+    }
+    // Filter persisted multi-deck selections to those still present.
+    const scope = stored.lastReviewScope;
+    if (scope?.kind === 'decks') {
+      const filtered = scope.deckIds.filter((d) => this.decks.has(d));
+      this.reviewScope =
+        filtered.length > 0 ? { kind: 'decks', deckIds: filtered } : { kind: 'active-deck' };
+    } else if (scope) {
+      this.reviewScope = scope;
     }
   }
 
@@ -684,19 +970,28 @@ class AppStore {
   }
 
   async addWord(text: string, translation: string): Promise<void> {
-    if (!this.storedConn || !this.activeGroupId) return;
+    if (!this.storedConn || !this.activeGroupId || !this.activeDeckId) {
+      throw new Error('no active deck');
+    }
     const t = text.trim();
     const tr = translation.trim();
     if (!t || !tr) throw new Error('both fields required');
     const tmNow = Date.now();
     const id = tmNow.toString();
     const ts = tmNow / 1000;
+    // Snapshot gid/did at entry. A group switch mid-await would
+    // otherwise let queue.publishIntent target the new group's topic
+    // and pollute that group's retained state.
+    const gid = this.activeGroupId;
+    const did = this.activeDeckId;
     const word: Word = { id, text: t, translation: tr, created: ts, updated: ts };
+    this.wordDeck.set(id, did);
     this.words.set(id, word);
     try {
-      await queue.publishIntent(wordTopic(this.storedConn.prefix, this.activeGroupId, id), word);
+      await queue.publishIntent(wordTopic(this.storedConn.prefix, gid, did, id), word);
     } catch (err) {
       this.words.delete(id);
+      this.wordDeck.delete(id);
       this.publishError = (err as Error).message;
       throw err;
     }
@@ -706,6 +1001,9 @@ class AppStore {
     if (!this.storedConn || !this.activeGroupId) return;
     const existing = this.words.get(id);
     if (!existing) return;
+    const did = this.wordDeck.get(id);
+    if (!did) return;
+    const gid = this.activeGroupId;
     const t = text.trim();
     const tr = translation.trim();
     if (!t || !tr) throw new Error('both fields required');
@@ -717,7 +1015,7 @@ class AppStore {
     };
     this.words.set(id, word);
     try {
-      await queue.publishIntent(wordTopic(this.storedConn.prefix, this.activeGroupId, id), word);
+      await queue.publishIntent(wordTopic(this.storedConn.prefix, gid, did, id), word);
     } catch (err) {
       this.words.set(id, existing);
       this.publishError = (err as Error).message;
@@ -729,6 +1027,10 @@ class AppStore {
     if (!this.storedConn || !this.activeGroupId) return;
     const prevWord = this.words.get(id);
     const prevSrs = this.srs.get(id);
+    const did = this.wordDeck.get(id);
+    if (!did) return;
+    const gid = this.activeGroupId;
+    this.wordDeck.delete(id);
     this.words.delete(id);
     this.srs.delete(id);
     // Seed the watermark so a peer's queued-while-offline content for
@@ -739,10 +1041,13 @@ class AppStore {
     this.wordWatermark.set(id, seed);
     this.srsWatermark.set(id, seed);
     try {
-      await queue.publishTombstone(wordTopic(this.storedConn.prefix, this.activeGroupId, id));
-      await queue.publishTombstone(srsTopic(this.storedConn.prefix, this.activeGroupId, id));
+      await queue.publishTombstone(wordTopic(this.storedConn.prefix, gid, did, id));
+      await queue.publishTombstone(srsTopic(this.storedConn.prefix, gid, did, id));
     } catch (err) {
-      if (prevWord) this.words.set(id, prevWord);
+      if (prevWord) {
+        this.wordDeck.set(id, did);
+        this.words.set(id, prevWord);
+      }
       if (prevSrs) this.srs.set(id, prevSrs);
       this.wordWatermark.delete(id);
       this.srsWatermark.delete(id);
@@ -753,11 +1058,14 @@ class AppStore {
 
   grade(wordId: string, g: Grade): void {
     if (!this.storedConn || !this.activeGroupId) return;
+    const did = this.wordDeck.get(wordId);
+    if (!did) return;
+    const gid = this.activeGroupId;
     const cur = this.srs.get(wordId) ?? defaultSrs(wordId);
     const next = applyGrade(cur, g, Date.now() / 1000);
     this.srs.set(wordId, next);
     void queue
-      .publishIntent(srsTopic(this.storedConn.prefix, this.activeGroupId, wordId), next)
+      .publishIntent(srsTopic(this.storedConn.prefix, gid, did, wordId), next)
       .catch((e) => console.warn('mwords: srs publish failed', e));
   }
 

@@ -25,20 +25,26 @@
 
   // Re-pick only on events that should advance the card: initial mount,
   // a grade (previousId changes), SRS mode flip, current word deleted,
-  // or word list arriving from empty. Updates to app.srs itself must
-  // NOT trigger a re-pick — that's the skip-a-card bug.
+  // scope change, or word list arriving from empty. Updates to app.srs
+  // itself must NOT trigger a re-pick — that's the skip-a-card bug.
   $effect(() => {
-    void app.words.size;
+    // Track the derived array reference itself, not just .length —
+    // an edit / peer rename rebuilds scopedWords with the same length,
+    // and we want the picker re-eval to fire then too.
+    void app.scopedWords;
     void app.settings.srsMode;
+    void app.reviewScope;
     void previousId;
     untrack(() => {
-      const wordsArray = Array.from(app.words.values());
+      const wordsArray = app.scopedWords;
       if (wordsArray.length === 0) {
         currentId = undefined;
         return;
       }
       // Keep current if it's still valid and the user hasn't just graded.
-      if (currentId && currentId !== previousId && app.words.has(currentId)) return;
+      if (currentId && currentId !== previousId && wordsArray.some((w) => w.id === currentId)) {
+        return;
+      }
       const picked = pickNext({
         words: wordsArray,
         srs: app.srs,
@@ -78,10 +84,10 @@
 
 <div class="col">
   <div class="counter muted" aria-live="polite">Reviewed: {reviewed}</div>
-  {#if app.words.size === 0}
+  {#if app.scopedWords.length === 0}
     <div class="card muted">
-      <p>No words yet in this group.</p>
-      <p>Switch to <strong>Edit</strong> below to add some.</p>
+      <p>No words in this scope.</p>
+      <p>Switch to <strong>Edit</strong> below to add some, or broaden the review scope.</p>
     </div>
   {:else if current}
     <ReviewCard {front} {back} {revealed} onReveal={() => (revealed = true)} />

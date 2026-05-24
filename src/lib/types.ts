@@ -5,6 +5,13 @@ export type Group = {
   updated: number;
 };
 
+export type Deck = {
+  id: string;
+  name: string;
+  created: number;
+  updated: number;
+};
+
 export type Word = {
   id: string;
   text: string;
@@ -29,6 +36,16 @@ export type SrsState = {
 
 export type SrsMode = 'sm2' | 'weighted-random' | 'serial';
 export type Direction = 'text' | 'translation';
+
+// Review scope. Controls which words feed the Review picker.
+// - 'active-deck' uses activeDeckId.
+// - 'decks' is a multi-select across decks in the active group.
+// - 'group' is every deck in the active group.
+// Edit always operates on the active deck regardless of scope.
+export type ReviewScope =
+  | { kind: 'active-deck' }
+  | { kind: 'decks'; deckIds: string[] }
+  | { kind: 'group' };
 
 export type Settings = {
   srsMode: SrsMode;

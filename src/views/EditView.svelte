@@ -4,7 +4,7 @@
   import type { Word } from '../lib/types.ts';
 
   const words = $derived(
-    Array.from(app.words.values()).sort((a, b) => Number(b.id) - Number(a.id)),
+    [...app.activeDeckWords].sort((a, b) => Number(b.id) - Number(a.id)),
   );
 
   // Modal state lives in the store so the popstate listener can close it.
@@ -31,7 +31,12 @@
 </script>
 
 <div class="col">
-  {#if words.length === 0}
+  {#if app.activeDeckId === null}
+    <div class="card muted">
+      <p>No active deck.</p>
+      <p>Pick or create a deck before editing. (Deck picker UI lands in slice 3.)</p>
+    </div>
+  {:else if words.length === 0}
     <div class="card muted">No words yet. Tap + to add one.</div>
   {:else}
     <ul class="words">
@@ -46,7 +51,9 @@
     </ul>
   {/if}
 
-  <button class="fab primary" onclick={openAdd} aria-label="Add word">+</button>
+  {#if app.activeDeckId !== null}
+    <button class="fab primary" onclick={openAdd} aria-label="Add word">+</button>
+  {/if}
 </div>
 
 {#if editorOpen}

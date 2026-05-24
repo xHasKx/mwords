@@ -1,4 +1,4 @@
-import type { Grade, Group, Settings, SrsState, Word } from './types.ts';
+import type { Deck, Grade, Group, Settings, SrsState, Word } from './types.ts';
 
 function isFiniteNonNeg(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n) && n >= 0;
@@ -13,6 +13,19 @@ const SRS_MODES = new Set(['sm2', 'weighted-random', 'serial']);
 const DIRECTIONS = new Set(['text', 'translation']);
 
 export function isGroup(x: unknown, topicId: string): x is Group {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  if (typeof o.id !== 'string' || o.id !== topicId) return false;
+  if (typeof o.name !== 'string') return false;
+  const trimmed = o.name.trim();
+  if (trimmed.length < 1 || trimmed.length > 256) return false;
+  if (!isFiniteNonNeg(o.created)) return false;
+  if (!isFiniteNonNeg(o.updated)) return false;
+  if (o.created > o.updated) return false;
+  return true;
+}
+
+export function isDeck(x: unknown, topicId: string): x is Deck {
   if (!x || typeof x !== 'object') return false;
   const o = x as Record<string, unknown>;
   if (typeof o.id !== 'string' || o.id !== topicId) return false;
