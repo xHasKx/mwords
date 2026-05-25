@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Activity window background. Shows in the status/nav-bar zones
+         behind the transparent system bars when the WebView's body bg
+         doesn't paint there. Light mode value lives here; the dark
+         variant is in values-night/. -->
+    <color name="appBackground">#ffffff</color>
+</resources>

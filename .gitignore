@@ -4,3 +4,11 @@ dist/
 .vite/
 *.log
 .DS_Store
+
+# Android signing material — never commit. A leaked .jks lets anyone
+# publish updates as you on the Play Store.
+*.jks
+*.keystore
+
+# Local secrets file (act / GitHub Actions local runs).
+.secrets

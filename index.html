@@ -2,17 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=overlays-content" />
     <meta name="theme-color" content="#0b0e14" />
     <title>mwords</title>
     <script>
       // Firefox Android reports a non-zero env(safe-area-inset-bottom)
       // even when the system nav lives outside the layout viewport,
-      // which inflates our bottom-padding cap and leaves a ~40px gap
-      // below the navbar. Chrome Android already returns 0 here, so
-      // forcing 0 on all Android is a no-op for Chrome and a fix for
-      // Firefox. iOS keeps the real inset for the home indicator.
-      if (/Android/i.test(navigator.userAgent)) {
+      // which inflates our bottom-padding cap. Narrow the override to
+      // Firefox only — Chrome Android (and the Capacitor WebView, which
+      // is Chrome-based) need the real value so the --safe-area-inset-*
+      // vars (injected by Capacitor 8's SystemBars on Android, native
+      // env() on iOS) actually take effect.
+      if (/Firefox/.test(navigator.userAgent) && /Android/i.test(navigator.userAgent)) {
         document.documentElement.style.setProperty('--safe-bottom', '0px');
       }
     </script>

@@ -16,6 +16,9 @@
   "license": "ISC",
   "devDependencies": {
     "@biomejs/biome": "2.4.15",
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
     "fake-indexeddb": "^6.2.5",
@@ -27,6 +30,7 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
+    "@capacitor/keyboard": "^8.0.3",
     "idb": "^8.0.3",
     "mqtt": "^5.15.1"
   }

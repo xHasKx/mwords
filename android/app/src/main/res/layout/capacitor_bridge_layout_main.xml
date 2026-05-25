@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Overrides @capacitor/android's capacitor_bridge_layout_main.xml.
+  Android's resource priority gives our app's layout precedence over the
+  library's. The Bridge looks for R.id.webview and casts it to
+  CapacitorWebView (line ~1612 in Bridge.java), so the inner view MUST
+  keep that id and be a subclass of com.getcapacitor.CapacitorWebView.
+  Our MyCapacitorWebView extends CapacitorWebView and adds IME flags
+  to suppress fullscreen / extract-view mode for the soft keyboard.
+-->
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context="com.getcapacitor.BridgeActivity">
+
+    <io.github.xhaskx.mwords.MyCapacitorWebView
+        android:id="@+id/webview"
+        android:layout_width="fill_parent"
+        android:layout_height="fill_parent" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

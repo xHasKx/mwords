@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark-mode override of values/colors.xml. Matches the dark
+         palette's bg color in src/app.css (CSS var: bg, value #0b0e14). -->
+    <color name="appBackground">#0b0e14</color>
+</resources>

@@ -14,7 +14,13 @@
   --font-stack: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, sans-serif;
 
-  --safe-bottom: min(env(safe-area-inset-bottom), 40px);
+  /* iOS WebKit populates env(); Capacitor 8's built-in SystemBars
+     plugin injects --safe-area-inset-* CSS vars on Android (default
+     insetsHandling: 'css'). max() picks whichever is non-zero so one
+     set of CSS works on both. The 40px cap keeps a misbehaving
+     browser (e.g. Firefox Android pre-fix) from pushing things too far. */
+  --safe-top: min(max(env(safe-area-inset-top), var(--safe-area-inset-top, 0px)), 40px);
+  --safe-bottom: min(max(env(safe-area-inset-bottom), var(--safe-area-inset-bottom, 0px)), 40px);
 }
 
 @media (prefers-color-scheme: light) {
@@ -60,6 +66,13 @@ input, textarea {
   padding: 0.6rem 0.75rem;
   width: 100%;
   font-size: 16px;
+  /* Android WebView pins the focused input to Y=0 when the soft
+     keyboard opens (block: 'start' scroll-into-view), hiding the
+     surrounding form. Reserve ~30vh of "safe" space above so the
+     browser scrolls the input into the upper-middle of the visible
+     area, keeping preceding fields on screen — closer to desktop
+     Chrome's block: 'nearest' behavior. */
+  scroll-margin-top: 30vh;
 }
 
 input:focus, textarea:focus {
@@ -98,6 +111,7 @@ button.danger {
   max-width: 640px;
   margin: 0 auto;
   padding: 1rem;
+  padding-top: calc(1rem + var(--safe-top));
   padding-bottom: calc(72px + var(--safe-bottom));
   min-height: 100vh;
 }

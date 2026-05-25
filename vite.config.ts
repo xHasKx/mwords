@@ -7,6 +7,9 @@ export default defineConfig({
     svelte(),
     visualizer({ filename: 'dist/stats.html', gzipSize: true, brotliSize: true }),
   ],
-  base: '/mwords/',
+  // Relative base so the same dist/ works under GitHub Pages
+  // (xhaskx.github.io/mwords/) and inside the Capacitor WebView
+  // (https://localhost/). Absolute /mwords/ would 404 on the latter.
+  base: './',
   server: { port: 5173, host: true },
 });

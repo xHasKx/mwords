@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Capacitor } from '@capacitor/core';
+  import { Keyboard } from '@capacitor/keyboard';
   import { app } from './lib/stores/app.svelte.ts';
   import ConnectionForm from './components/ConnectionForm.svelte';
   import NavBar from './components/NavBar.svelte';
@@ -9,6 +11,46 @@
   import SettingsView from './views/SettingsView.svelte';
 
   app.init();
+
+  // Capacitor 8's built-in SystemBars plugin injects --safe-area-inset-*
+  // CSS vars and handles edge-to-edge automatically (default
+  // insetsHandling: 'css'). No JS init needed — our app.css consumes
+  // those vars directly.
+  if (Capacitor.isNativePlatform()) {
+    // Diagnose keyboard behavior. Logs are visible in chrome://inspect's
+    // Console and tell us whether (a) the listener fires at all, (b)
+    // window.innerHeight reflects the post-keyboard viewport (= WebView
+    // was resized) or stays full (= our resize:'none' config worked),
+    // and (c) where the focused input actually sits in the doc.
+    void Keyboard.addListener('keyboardDidShow', (info) => {
+      const focused = document.activeElement as HTMLElement | null;
+      const tag = focused?.tagName;
+      const rect = focused?.getBoundingClientRect();
+      console.log('[mwords] keyboardDidShow', {
+        keyboardHeight: info?.keyboardHeight,
+        innerHeight: window.innerHeight,
+        visualViewport: window.visualViewport
+          ? {
+              height: window.visualViewport.height,
+              width: window.visualViewport.width,
+              offsetTop: window.visualViewport.offsetTop,
+            }
+          : null,
+        scrollY: window.scrollY,
+        bodyHeight: document.body.getBoundingClientRect().height,
+        focusedTag: tag,
+        focusedRect: rect
+          ? { top: rect.top, bottom: rect.bottom, height: rect.height }
+          : null,
+      });
+      if (
+        focused instanceof HTMLInputElement ||
+        focused instanceof HTMLTextAreaElement
+      ) {
+        focused.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    });
+  }
 
   // Nav is visible whenever the user has a "scope" to navigate within.
   // Connect form and the group picker (post-connect landing) intentionally
