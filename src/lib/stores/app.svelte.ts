@@ -225,6 +225,15 @@ class AppStore {
       hasActiveGroup: this.activeGroupId !== null,
       hasActiveDeck: this.activeDeckId !== null,
     });
+    // Landing on the connect form from any non-idle state must tear
+    // the session down — otherwise the form re-mounts with
+    // `connection !== 'idle'` (Cancel + spinner) and a stale
+    // autoconnect=true on the stored creds. disconnect() resets both
+    // and re-seeds the history entry via replaceIntent.
+    if (r.intent.view === 'connect' && this.connection !== 'idle') {
+      this.disconnect();
+      return;
+    }
     if (r.action === 'fallback') {
       this.replaceIntent(r.intent);
       return;

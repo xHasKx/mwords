@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { App as CapacitorApp } from '@capacitor/app';
   import { Capacitor } from '@capacitor/core';
   import { Keyboard } from '@capacitor/keyboard';
   import { app } from './lib/stores/app.svelte.ts';
@@ -48,6 +49,18 @@
         focused instanceof HTMLTextAreaElement
       ) {
         focused.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    });
+
+    // Hardware back button: route through the synthetic history stack
+    // (pushState entries) so OS back matches in-app back. canGoBack
+    // reflects WebView history, which pushState updates; when there's
+    // no prior entry, exit the app.
+    void CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+      if (canGoBack) {
+        window.history.back();
+      } else {
+        void CapacitorApp.exitApp();
       }
     });
   }
