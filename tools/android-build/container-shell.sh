@@ -44,4 +44,6 @@ exec podman run --rm -it \
   -e ANDROID_KEYSTORE_PATH \
   -e ANDROID_KEYSTORE_PASSWORD \
   -e ANDROID_KEY_PASSWORD \
+  -e ANDROID_VERSION_NAME \
+  -e ANDROID_VERSION_CODE \
   "$IMAGE" bash -c 'mkdir -p "$HOME" && exec bash'

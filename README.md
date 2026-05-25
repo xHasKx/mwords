@@ -60,13 +60,19 @@ shell entry, and APK assembly are three scripts under
 
 ```bash
 tools/android-build/container-build.sh   # one-time: build the image
-source .../xxx # export env vars
+source .../xxx                           # export keystore env vars
+export ANDROID_VERSION_NAME=1.2.3        # → APK versionName
+export ANDROID_VERSION_CODE=10203        # → APK versionCode (MAJOR*10000 + MINOR*100 + PATCH)
 tools/android-build/container-shell.sh   # forwards env vars into container
 # inside the container:
 tools/android-build/apk-build.sh assembleRelease # or without arg to make debug apk
 ```
 
 Release APK lands at `android/app/build/outputs/apk/release/app-release.apk`.
+
+Omitting the two version exports falls back to `versionName=1.0-dev` /
+`versionCode=1`, which is fine for sideload-testing but should not be
+published — Android won't install a same-or-lower versionCode on top.
 
 ## Deploy
 

@@ -1,0 +1,112 @@
+name: Build Android APK
+
+# Triggered by a vMAJOR.MINOR.PATCH tag. The tag becomes the APK's
+# versionName (e.g. v1.2.3 → "1.2.3") and versionCode is derived
+# deterministically as MAJOR*10000 + MINOR*100 + PATCH.
+#
+# Requires three repo secrets:
+#   ANDROID_KEYSTORE_B64        base64 of local/mwords-release.jks
+#   ANDROID_KEYSTORE_PASSWORD   keystore password
+#   ANDROID_KEY_PASSWORD        key password (same as keystore if generated with Enter-to-reuse)
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (vMAJOR.MINOR.PATCH). Must already exist.'
+        required: true
+
+permissions:
+  contents: write   # softprops/action-gh-release uploads to the tag's Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Parse tag into versionName + versionCode
+        id: ver
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          NAME="${TAG#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$NAME"
+          if [[ -z "$MAJOR" || -z "$MINOR" || -z "$PATCH" ]]; then
+            echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          if (( MINOR >= 100 || PATCH >= 100 )); then
+            echo "::error::MINOR and PATCH must each be < 100 for monotonic versionCode" >&2
+            exit 1
+          fi
+          CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "Resolved: versionName=$NAME versionCode=$CODE"
+
+      - name: Restore keystore from secret
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [[ -z "$KS_B64" ]]; then
+            echo "::error::ANDROID_KEYSTORE_B64 secret is empty" >&2
+            exit 1
+          fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/mwords-release.jks"
+
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+
+      - name: Assemble release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/mwords-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: mwords
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_VERSION_NAME: ${{ steps.ver.outputs.name }}
+          ANDROID_VERSION_CODE: ${{ steps.ver.outputs.code }}
+        run: |
+          cd android
+          ./gradlew assembleRelease
+
+      - name: Rename + checksum APK
+        id: apk
+        run: |
+          SRC=android/app/build/outputs/apk/release/app-release.apk
+          DST="mwords-${{ steps.ver.outputs.name }}.apk"
+          mv "$SRC" "$DST"
+          sha256sum "$DST" | tee "$DST.sha256"
+          echo "path=$DST" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mwords-${{ steps.ver.outputs.name }}-apk
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+
+      - name: Attach APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
