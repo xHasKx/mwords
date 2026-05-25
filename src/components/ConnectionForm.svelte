@@ -115,7 +115,7 @@
   </div>
   <label class="check">
     <input id="autoconnect" type="checkbox" bind:checked={autoconnect} />
-    <span>Autoconnect on page load</span>
+    <span>Autoconnect</span>
   </label>
   {#if error}<div class="error">{error}</div>{/if}
   {#if !inFlight && app.connectionError}
