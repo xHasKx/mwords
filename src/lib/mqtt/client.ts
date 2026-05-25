@@ -12,6 +12,7 @@ const MAX_BACKOFF = 30_000;
 
 export class MqttWrapper {
   private client: MqttClient | null = null;
+  private disposed = false;
   private onMessage: MessageHandler;
   private onState: StateHandler;
   private onNextAttempt: NextAttemptHandler | null;
@@ -30,6 +31,7 @@ export class MqttWrapper {
 
   async connect(conn: StoredConnection): Promise<void> {
     if (this.client) return;
+    if (this.disposed) return;
     this.onState('connecting');
     this.nextBackoff = MIN_BACKOFF;
     // Lazy-load mqtt.js so the connect form ships in the initial bundle
@@ -37,6 +39,11 @@ export class MqttWrapper {
     // is `connect()`, so the dynamic import happens at most once and
     // lands on the same async tick as the form submission.
     const mqtt = (await import('mqtt')).default;
+    // disconnect() may have fired during the import — e.g. a cold-start
+    // deep link tears down the auto-connect mid-import. Bailing here
+    // prevents an orphaned client from attaching handlers that would
+    // stomp connection state after the wrapper is no longer in use.
+    if (this.disposed) return;
     const client = mqtt.connect(conn.url, {
       username: conn.username || undefined,
       password: conn.password || undefined,
@@ -94,6 +101,7 @@ export class MqttWrapper {
   }
 
   disconnect(): void {
+    this.disposed = true;
     const c = this.client;
     if (!c) return;
     this.client = null;
