@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core';
 import { SvelteMap } from 'svelte/reactivity';
 import { MqttWrapper } from '../mqtt/client.ts';
 import type { ConnectionState } from '../mqtt/types.ts';
@@ -34,6 +35,13 @@ import {
 } from '../history.ts';
 
 const SHARE_HASH_PREFIX = '#share=';
+
+// The Pages-deployed origin. On native Capacitor `window.location` is
+// `https://localhost/` (the WebView's bundled-assets origin) which is
+// useless to share, so buildShareUrl falls back to this. The Android
+// manifest declares an intent filter for the same host+path prefix so
+// taps on these URLs offer the installed app as an opener.
+const PUBLIC_BASE_URL = 'https://xhaskx.github.io/mwords/';
 
 const SYNC_DEBOUNCE_MS = 500;
 
@@ -304,8 +312,28 @@ class AppStore {
       prefix: conn.prefix,
     });
     if (typeof window === 'undefined') return null;
-    const { origin, pathname } = window.location;
-    return `${origin}${pathname}${SHARE_HASH_PREFIX}${encoded}`;
+    const base = Capacitor.isNativePlatform()
+      ? PUBLIC_BASE_URL
+      : `${window.location.origin}${window.location.pathname}`;
+    return `${base}${SHARE_HASH_PREFIX}${encoded}`;
+  }
+
+  // Handle a share URL surfaced at runtime (Android intent → Capacitor's
+  // appUrlOpen → here). The init() share-hash path covers the cold-boot
+  // case via window.location; this covers warm-start / app-already-running.
+  applyShareUrl(rawUrl: string): void {
+    const hashIdx = rawUrl.indexOf(SHARE_HASH_PREFIX);
+    if (hashIdx === -1) return;
+    const decoded = decodeShare(rawUrl.slice(hashIdx + SHARE_HASH_PREFIX.length));
+    if (!decoded) return;
+    // Tear down any running session first — the user is switching to a
+    // different set of credentials. disconnect() also seeds view='connect'.
+    if (this.connection !== 'idle') {
+      this.disconnect();
+    } else if (this.view !== 'connect') {
+      this.replaceIntent({ view: 'connect' });
+    }
+    this.shareImport = decoded;
   }
 
   connect(conn: StoredConnection): void {

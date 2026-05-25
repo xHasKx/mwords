@@ -15,10 +15,33 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Release signing reads from env (matches the names documented in
+    // tools/android-build/apk-build.sh and forwarded by container-shell.sh):
+    //   ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
+    //   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+    // If any are unset, the release config stays inert — assembleDebug
+    // still works; assembleRelease will fail at signing time with a
+    // clear message, which is what we want (better than silently
+    // shipping an unsigned release).
+    signingConfigs {
+        release {
+            def ksPath  = System.getenv("ANDROID_KEYSTORE_PATH")
+            def ksPass  = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            def alias   = System.getenv("ANDROID_KEY_ALIAS")
+            def keyPass = System.getenv("ANDROID_KEY_PASSWORD")
+            if (ksPath && ksPass && alias && keyPass) {
+                storeFile     file(ksPath)
+                storePassword ksPass
+                keyAlias      alias
+                keyPassword   keyPass
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 }

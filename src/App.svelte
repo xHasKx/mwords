@@ -63,6 +63,14 @@
         void CapacitorApp.exitApp();
       }
     });
+
+    // Deep-link arrivals (intent filter in AndroidManifest matches
+    // https://xhaskx.github.io/mwords/...). Fires both on cold-launch
+    // and while the app is already running. The store decides whether
+    // to tear down the current session before applying the new creds.
+    void CapacitorApp.addListener('appUrlOpen', ({ url }) => {
+      app.applyShareUrl(url);
+    });
   }
 
   // Nav is visible whenever the user has a "scope" to navigate within.
@@ -78,7 +86,11 @@
 </script>
 
 {#if app.view === 'connect'}
-  <ConnectionForm />
+  <!-- Re-key on shareImport so a deep-link arrival while the form is
+       already visible re-runs its one-shot prefill from the new payload. -->
+  {#key app.shareImport}
+    <ConnectionForm />
+  {/key}
 {:else if app.view === 'picker'}
   <GroupPickerView />
 {:else if app.view === 'deck-picker'}

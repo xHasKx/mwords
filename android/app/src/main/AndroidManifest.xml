@@ -23,6 +23,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+              Share-link App Links. autoVerify=true makes Android fetch
+              https://xhaskx.github.io/.well-known/assetlinks.json at
+              install/update time and check that its package_name +
+              signing-cert SHA-256 match — when they do, taps on these
+              URLs open mwords directly without a chooser. Capacitor
+              delivers the URL to JS via the App plugin's appUrlOpen.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="xhaskx.github.io"
+                    android:pathPrefix="/mwords/" />
+            </intent-filter>
+
         </activity>
 
         <provider
