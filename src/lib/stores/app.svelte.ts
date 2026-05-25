@@ -367,10 +367,10 @@ class AppStore {
     this.connection = 'idle';
     this.connectionError = null;
     this.nextAttemptAt = null;
-    if (this.storedConn?.autoconnect) {
-      this.storedConn = { ...this.storedConn, autoconnect: false };
-      creds.update({ autoconnect: false });
-    }
+    // Keep the stored autoconnect preference as-is — the checkbox
+    // reflects "what should happen on the next page load", not "should
+    // we reconnect right now". Within this session, nothing else reads
+    // the flag, so leaving it true here doesn't trigger a reconnect.
     this.replaceIntent({ view: 'connect' });
   }
 
