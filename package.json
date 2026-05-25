@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@capacitor/app": "^8.1.0",
+    "@capacitor/browser": "^8.0.3",
     "@capacitor/keyboard": "^8.0.3",
     "idb": "^8.0.3",
     "mqtt": "^5.15.1"

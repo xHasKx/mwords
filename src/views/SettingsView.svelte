@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { Browser } from '@capacitor/browser';
+  import { Capacitor } from '@capacitor/core';
   import { app } from '../lib/stores/app.svelte.ts';
   import { DEFAULT_REPEAT_HOURS, type Direction, type SrsMode } from '../lib/types.ts';
+
+  const SOURCE_URL = 'https://github.com/xHasKx/mwords';
 
   const modes: { value: SrsMode; label: string; hint: string }[] = [
     { value: 'sm2', label: 'SM-2', hint: 'Classic spaced-repetition with due dates.' },
@@ -53,6 +57,18 @@
   function disconnectAndForget() {
     if (!confirm('Disconnect and forget stored credentials?')) return;
     void app.disconnectAndForget();
+  }
+
+  async function openSource(e: Event) {
+    // On native Capacitor, the WebView would otherwise try to navigate
+    // itself to GitHub (we'd lose the app). Browser.open routes through
+    // Chrome Custom Tabs on Android / SFSafariViewController on iOS.
+    if (Capacitor.isNativePlatform()) {
+      e.preventDefault();
+      await Browser.open({ url: SOURCE_URL });
+    }
+    // In the regular browser, let the anchor's default target=_blank
+    // behavior take over.
   }
 
   async function shareConnection() {
@@ -150,6 +166,16 @@
       <div class="muted">Couldn't access the clipboard. Copy the URL manually:</div>
       <input class="manual-share" type="text" readonly value={shareUrl} aria-label="Share URL" />
     {/if}
+  </div>
+
+  <div class="card col">
+    <div><strong>Source</strong></div>
+    <div class="muted">
+      mwords is open-source.
+      <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer" onclick={openSource}>
+        {SOURCE_URL}
+      </a>
+    </div>
   </div>
 </div>
 
