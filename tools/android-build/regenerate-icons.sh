@@ -72,4 +72,16 @@ for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
     "$dir/ic_launcher_round.png"
 done
 
-echo "Done. Regenerated icons for all 5 densities."
+echo "Regenerated Android launcher icons for all 5 densities."
+
+# Web favicons — derive from the largest Android launcher PNG so the
+# Capacitor app, the browser tab, and the PWA / iOS home-screen icon
+# all share the same design.
+mkdir -p public
+src="$RES/mipmap-xxxhdpi/ic_launcher.png"
+$IM "$src" -define icon:auto-resize=16,32,48 public/favicon.ico
+$IM "$src" -resize 180x180 public/apple-touch-icon.png
+$IM "$src" -resize 192x192 public/icon-192.png
+$IM "$src" -resize 512x512 public/icon-512.png
+
+echo "Regenerated web favicons under public/."
