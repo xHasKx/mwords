@@ -51,6 +51,23 @@ npm run preview     # serve dist/ locally for a smoke test
 sub-path, so `npm run preview` serves the app at
 `http://localhost:4173/mwords/` — not the root.
 
+## Android APK
+
+Capacitor-wrapped APK builds run in a podman container that ships the
+JDK + Android SDK; no host install needed beyond `podman`. Image build,
+shell entry, and APK assembly are three scripts under
+`tools/android-build/`.
+
+```bash
+tools/android-build/container-build.sh   # one-time: build the image
+source .../xxx # export env vars
+tools/android-build/container-shell.sh   # forwards env vars into container
+# inside the container:
+tools/android-build/apk-build.sh assembleRelease # or without arg to make debug apk
+```
+
+Release APK lands at `android/app/build/outputs/apk/release/app-release.apk`.
+
 ## Deploy
 
 `master` is for ongoing commits and does **not** trigger Pages rebuilds.
