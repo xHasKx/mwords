@@ -403,10 +403,16 @@ class AppStore {
   }
 
   async disconnectAndForget(): Promise<void> {
-    this.disconnect();
+    // Order matters: disconnect() flips view='connect' synchronously,
+    // and the awaited queue.clear() yields the microtask queue — so
+    // Svelte gets to mount ConnectionForm before we'd wipe creds. The
+    // form's one-shot init then reads the still-present storedConn and
+    // re-fills the inputs with the credentials the user just asked to
+    // forget. Clear the source of truth first so the mount sees null.
     await queue.clear();
     creds.forget();
     this.storedConn = null;
+    this.disconnect();
   }
 
   private handleState(state: ConnectionState, err?: Error): void {
