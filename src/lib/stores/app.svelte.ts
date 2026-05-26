@@ -846,7 +846,12 @@ class AppStore {
     }
   }
 
-  async exportAll(): Promise<{ filename: string; groupCount: number; wordCount: number }> {
+  async exportAll(): Promise<{
+    filename: string;
+    groupCount: number;
+    deckCount: number;
+    wordCount: number;
+  }> {
     if (!this.storedConn) throw new Error('not connected');
     // Note: the *execution* gate is the fresh-client connect inside
     // exportAllOverNewClient. The UI gates on `connection` separately
@@ -857,13 +862,15 @@ class AppStore {
       throw new Error('Connect to the broker before exporting.');
     }
     const payload = await exportAllOverNewClient(this.storedConn);
-    const filename = exportFilename();
-    triggerDownload(filename, JSON.stringify(payload));
+    const filename = exportFilename(this.storedConn.prefix);
+    await triggerDownload(filename, JSON.stringify(payload));
+    let deckCount = 0;
     let wordCount = 0;
     for (const g of payload.groups) {
+      deckCount += g.decks.length;
       for (const d of g.decks) wordCount += d.words.length;
     }
-    return { filename, groupCount: payload.groups.length, wordCount };
+    return { filename, groupCount: payload.groups.length, deckCount, wordCount };
   }
 
   async importAll(

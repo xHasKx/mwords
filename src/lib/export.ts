@@ -1,3 +1,6 @@
+import { Capacitor } from '@capacitor/core';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import type { StoredConnection } from './storage/credentials.ts';
 import { parseTopic } from './mqtt/topics.ts';
 import { isDeck, isGroup, isWord } from './validators.ts';
@@ -172,15 +175,50 @@ export async function exportAll(conn: StoredConnection): Promise<ExportPayload> 
   });
 }
 
-export function exportFilename(now: Date = new Date()): string {
+export function exportFilename(prefix: string, now: Date = new Date()): string {
   const pad = (n: number) => n.toString().padStart(2, '0');
+  // The MQTT prefix validator already rejects whitespace and `/ + # \0`,
+  // but it still permits filesystem-hostile characters like `:`, `*`,
+  // `?`, `"`, `<`, `>`, `|`, `\`. Coerce anything outside the safe set
+  // to `_` so the share sheet sees a predictable filename across
+  // Android/iOS/desktop targets.
+  const safe = prefix.replace(/[^A-Za-z0-9._-]/g, '_') || 'mwords';
   return (
-    `mwords-export-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `${safe}-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
     `-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.json`
   );
 }
 
-export function triggerDownload(filename: string, json: string): void {
+export async function triggerDownload(filename: string, json: string): Promise<void> {
+  // Capacitor's Android WebView ignores `<a download>` on blob URLs,
+  // and navigator.share({files}) isn't supported in embedded WebViews
+  // either. Route native saves through Filesystem + Share: write the
+  // JSON to the app's private Cache dir (no permissions needed), then
+  // hand the file:// URI to the system share sheet so the user picks
+  // Files / Drive / Save to Downloads themselves.
+  if (Capacitor.isNativePlatform()) {
+    await Filesystem.writeFile({
+      path: filename,
+      data: json,
+      directory: Directory.Cache,
+      encoding: Encoding.UTF8,
+    });
+    const { uri } = await Filesystem.getUri({
+      path: filename,
+      directory: Directory.Cache,
+    });
+    try {
+      await Share.share({ url: uri, title: filename, dialogTitle: 'Save mwords export' });
+    } catch (err) {
+      // User dismissed the share sheet — not an error to surface.
+      const msg = (err as Error)?.message ?? '';
+      if (msg.includes('canceled') || msg.includes('cancelled') || msg.includes('Share canceled')) {
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

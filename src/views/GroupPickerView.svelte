@@ -102,7 +102,11 @@
     busy = true;
     try {
       const r = await app.exportAll();
-      portStatus = `Saved as ${r.filename} (${r.groupCount} group${r.groupCount === 1 ? '' : 's'}, ${r.wordCount} word${r.wordCount === 1 ? '' : 's'}).`;
+      portStatus =
+        `Saved as ${r.filename} ` +
+        `(${r.groupCount} group${r.groupCount === 1 ? '' : 's'}, ` +
+        `${r.deckCount} deck${r.deckCount === 1 ? '' : 's'}, ` +
+        `${r.wordCount} word${r.wordCount === 1 ? '' : 's'}).`;
     } catch (err) {
       portStatus = null;
       portError = (err as Error).message;
@@ -220,7 +224,7 @@
     <summary><strong>Import / Export</strong></summary>
     <div class="col port-body">
       <div class="muted port-hint">
-        Export your groups and words to a JSON file, or import a file from another mwords instance. Imports merge into existing groups by name; SRS history is not preserved.
+        Export your groups, decks, and words to a JSON file, or import a file from another mwords instance. Imports merge into existing groups and decks by name; SRS history is not preserved.
       </div>
       <div class="row">
         <button onclick={doExport} disabled={busy || !canPort} title={portHint}>
