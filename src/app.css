@@ -54,6 +54,23 @@ html, body {
   overflow-x: hidden;
 }
 
+/* Suppress the system text-selection UI (floating Copy/Translate
+   toolbar AND the magnifier loupe that hovers over the page) on UI
+   chrome. Without this, a long-press anywhere on Android WebView
+   triggers the magnifier overlay — distracting in a flashcard app
+   where the only text worth copying is what the user is editing.
+   Inputs/textareas opt back in so editing still works normally. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 button, input, textarea, select {
   font: inherit;
   color: inherit;
