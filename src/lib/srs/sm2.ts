@@ -7,6 +7,12 @@ const QUALITY: Record<Grade, number> = {
   easy: 5,
 };
 
+// Anki-style modifiers layered onto the classic SM-2 schedule so the
+// three passing grades produce distinct intervals instead of all three
+// snapping to the same step.
+const HARD_FACTOR = 1.2;
+const EASY_BONUS = 1.3;
+
 // Seconds per `intervalDays` unit. The "day" in the SM-2 model is one
 // repeat interval; mwords lets the user shorten/extend it via the
 // Settings → Repeat interval control. Default 86_400 = 24h, matching
@@ -20,17 +26,14 @@ export function transition(
   intervalSeconds: number = DEFAULT_INTERVAL_SECONDS,
 ): SrsState {
   const q = QUALITY[grade];
+  const nextDays = nextIntervalDaysFor(state, grade);
 
-  let { ease, reps, intervalDays, lapses } = state;
+  let { ease, reps, lapses } = state;
 
   if (q < 3) {
     reps = 0;
-    intervalDays = 0;
     lapses += 1;
   } else {
-    if (reps === 0) intervalDays = 1;
-    else if (reps === 1) intervalDays = 6;
-    else intervalDays = Math.round(intervalDays * ease);
     reps += 1;
   }
 
@@ -39,10 +42,10 @@ export function transition(
   return {
     id: state.id,
     ease,
-    intervalDays,
+    intervalDays: nextDays,
     reps,
     lapses,
-    due: now + intervalDays * intervalSeconds,
+    due: now + nextDays * intervalSeconds,
     lastGrade: grade,
     reviewCount: state.reviewCount + 1,
     updated: now,
@@ -50,11 +53,24 @@ export function transition(
 }
 
 export function nextIntervalDaysFor(state: SrsState, grade: Grade): number {
-  const q = QUALITY[grade];
-  if (q < 3) return 0;
-  if (state.reps === 0) return 1;
-  if (state.reps === 1) return 6;
-  return Math.round(state.intervalDays * state.ease);
+  if (grade === 'again') return 0;
+  if (state.reps === 0) {
+    if (grade === 'hard') return 1;
+    if (grade === 'good') return 2;
+    return 4;
+  }
+  if (state.reps === 1) {
+    if (grade === 'hard') return 3;
+    if (grade === 'good') return 6;
+    return Math.round(6 * EASY_BONUS);
+  }
+  // Mature card — multiply the prior interval, never letting Hard stall
+  // (must grow by at least one unit) and giving Easy the standard bonus.
+  if (grade === 'hard') {
+    return Math.max(state.intervalDays + 1, Math.round(state.intervalDays * HARD_FACTOR));
+  }
+  if (grade === 'good') return Math.round(state.intervalDays * state.ease);
+  return Math.round(state.intervalDays * state.ease * EASY_BONUS);
 }
 
 export function pick(args: {

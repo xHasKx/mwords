@@ -15,10 +15,15 @@
   function summary(g: Grade): string {
     const d = nextIntervalDaysFor(srs, g);
     if (d === 0) return 'now';
-    // Display the projected interval in raw hours (intervalDays * repeatHours),
-    // never folded into days. The SM-2 "day" is configurable now, so a
-    // generic 'h' label keeps the units consistent across settings.
-    return `${d * repeatHours}h`;
+    // intervalDays is in units of `repeatHours`; fold the resulting hours
+    // into a "Xd", "Yh" or "XdYh" label so a 30-hour interval reads as
+    // "1d6h" instead of the raw hour count.
+    const totalHours = Math.round(d * repeatHours);
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours - days * 24;
+    if (days === 0) return `${hours}h`;
+    if (hours === 0) return `${days}d`;
+    return `${days}d${hours}h`;
   }
 </script>
 
